@@ -13,8 +13,9 @@ from rest_framework import status
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db import connection
 
-from apps_utils import today_timestamp, UtilsPostgresql, UtilsRabbitmq, year_timestamp, generate_module_uuid
+from apps_utils import today_timestamp, UtilsRabbitmq, year_timestamp, generate_module_uuid, AliOss
 from constants import PrimaryKeyType
 from permissions import StorePermission, store_decorator, store_approval_decorator
 from store.store_utils import update_invoice, update_completed_storage, update_purchase_warehousing, update_picking_list
@@ -23,6 +24,22 @@ logger = logging.getLogger('django')
 
 
 # 仓库部-----------------------------------------------------------------------------------------------------------------
+
+"""
+document: Connections and cursors 官方文档用法
+
+https://docs.djangoproject.com/zh-hans/2.2/topics/db/sql/#connections-and-cursors
+
+with connection.cursor() as c:
+    c.execute(...)
+或者
+c = connection.cursor()
+try:
+    c.execute(...)
+finally:
+    c.close()
+"""
+
 
 class StoreMain(GenericAPIView):
     """仓库部首页 store/main"""
@@ -33,13 +50,9 @@ class StoreMain(GenericAPIView):
         start = int(request.query_params.get("start", timestamp[0]))
         end = int(request.query_params.get("end", timestamp[1]))
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        # print(connection)
+        cursor = connection.cursor()
 
         count_1 = """
         select
@@ -227,7 +240,7 @@ class StoreMain(GenericAPIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreInvoiceMain(APIView):
@@ -244,13 +257,9 @@ class StoreInvoiceMain(APIView):
         else:
             condition = ""
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select
@@ -286,7 +295,7 @@ class StoreInvoiceMain(APIView):
                 cursor.execute(sql % (factory_id, i, factory_id))
                 result = cursor.fetchall()
                 for res in result:
-                    di, products_list = dict(), list()
+                    di, products = dict(), ""
 
                     di["id"] = res[0]
                     order_id = res[1]
@@ -315,11 +324,11 @@ class StoreInvoiceMain(APIView):
                     result2 = cursor.fetchall()
                     for re in result2:
                         dt = dict()
-                        dt["count"] = re[0]
+                        dt["count"] = round(re[0] if re[0] else 0, 2)
                         dt["product"] = re[1]
                         dt["unit"] = re[2]
-                        products_list.append(dt)
-                    di["products_list"] = products_list
+                        products += str(dt["product"]) + ":" + str(dt["count"]) + str(dt["unit"]) + ";"
+                    di["products"] = products.rstrip(";")
                     data_dict[i].append(di)
 
             return Response({"waited": waited, "deliver": deliver, "done": done}, status=status.HTTP_200_OK)
@@ -327,7 +336,7 @@ class StoreInvoiceMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreInvoiceDetail(APIView):
@@ -343,12 +352,10 @@ class StoreInvoiceDetail(APIView):
         user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
         user_id = phone if not user_id else user_id
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         cursor.execute(
             "select count(1) from base_store_invoice where factory = '%s' and id = '%s';" % (factory_id, invoice_id))
@@ -361,13 +368,15 @@ class StoreInvoiceDetail(APIView):
           t1.id, t1.order_id, t1.state,
           t2.order_type, coalesce(t2.plan_arrival_time, 0) as plan_arrival_time, 
           coalesce(t2.collected, 0) as receipt, 
-          coalesce(t2.remark, '') as remark, 
+          coalesce(t1.remark, '') as remark, 
           coalesce(t3.name, t7.name) as company_name, 
-          coalesce(concat(t3.region, t3.address), concat(t7.region, t7.address)) as address,
+          coalesce(t3.region || t3.address, t7.region || t7.address) as address,
           coalesce(t4.phone, '') as phone,
           coalesce(t5.name, '') as client_name,
           coalesce(t6.name, '') as deliver_person, coalesce(t6.phone, '') as deliver_phone, 
-          coalesce(t1.deliver_time, 0) as deliver_time
+          coalesce(t1.deliver_time, 0) as deliver_time,
+          t2.plan_arrival_time, t3.deliver_days,
+          t6.image as deliver_image
         from
           (
             select
@@ -391,7 +400,7 @@ class StoreInvoiceDetail(APIView):
               factory_users 
             where 
               '1' = any(rights)
-          )t4 on t3.factory = t4.factory
+          )t4 on t2.factory = t4.factory
         left join 
           user_info t5 on t4.phone = t5.phone
         left join 
@@ -454,6 +463,13 @@ class StoreInvoiceDetail(APIView):
             data["deliver_person"] = result1[11]
             data["deliver_phone"] = result1[12]
             data["deliver_time"] = result1[13]
+            # 发货单添加 预计发货时间 = 订单期望送达时间 - 送达天数
+            order_plan_arrival_time, client_deliver_days = result1[14], result1[15] if result1[15] else 0  # 时间戳, 天数
+            data["plan_deliver_time"] = arrow.get(order_plan_arrival_time).shift(
+                days=-round(client_deliver_days, 1)).timestamp
+
+            data["deliver_image"] = alioss.joint_image(result1[16].tobytes().decode()) if \
+                isinstance(result1[16], memoryview) else alioss.joint_image(result1[16])
 
             cursor.execute(product_sql % order_id)
             result2 = cursor.fetchall()
@@ -462,7 +478,7 @@ class StoreInvoiceDetail(APIView):
             for res in result2:
                 di = dict()
                 di["count"] = round(res[0] if res[0] else 0, 2)
-                di["price"] = round(res[1], 2)
+                di["price"] = round(res[1] if res[1] else 0, 2)
                 di["name"] = res[2]
                 di["unit"] = res[3]
                 di["category"] = res[4]
@@ -490,7 +506,7 @@ class StoreInvoiceDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     def post(self, request):
         """发货单-发货"""
@@ -502,11 +518,8 @@ class StoreInvoiceDetail(APIView):
         user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         cursor.execute(
             "select count(1) from base_store_invoice where id = '%s' and factory = '%s';" % (
@@ -531,7 +544,7 @@ class StoreInvoiceDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreCompletedStorageMain(APIView):
@@ -540,13 +553,9 @@ class StoreCompletedStorageMain(APIView):
     permission_classes = [StorePermission]
 
     def get(self, request):
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select
@@ -581,7 +590,7 @@ class StoreCompletedStorageMain(APIView):
                     di = dict()
                     di["id"] = res[0]
                     di["income_time"] = res[2]
-                    di["plan_count"] = res[3]
+                    di["plan_count"] = round(res[3] if res[3] else 0, 2)
                     di["complete_time"] = res[4]
                     di["name"] = res[5]
                     di["unit"] = res[6]
@@ -593,7 +602,7 @@ class StoreCompletedStorageMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreCompletedStorageDetail(APIView):
@@ -609,12 +618,11 @@ class StoreCompletedStorageDetail(APIView):
         user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
+
         user_id = phone if not user_id else user_id
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_store_completed_storage where factory = '%s' and id = '%s';" % (
             factory_id, completed_id))
@@ -627,7 +635,8 @@ class StoreCompletedStorageDetail(APIView):
          t1.*,
          coalesce(t2.target_count, 0) as plan_count, coalesce(t2.complete_time, 0) as complete_time,
          coalesce(t3.name, '') as name, coalesce(t3.unit, '') as unit, coalesce(t4.name, '') as category,
-         coalesce(t2.complete_count, 0) as complete_count
+         coalesce(t2.complete_count, 0) as complete_count,
+         t2.id as product_id
         from
           (
             select 
@@ -652,18 +661,31 @@ class StoreCompletedStorageDetail(APIView):
             result = cursor.fetchone()
             data["id"], data["state"] = result[0], result[2]
             product["plan_count"], product["complete_time"], product["name"], product["unit"], product["category"], \
-                product["complete_count"] = result[6], result[7], result[8], result[9], result[10], result[11]
+                product["complete_count"] = round(result[6] if result[6] else 0, 2), result[7], result[8], result[9], \
+                result[10], result[11]
             completed_storage["income_time"] = result[3]
             send_user_id, receive_user_id = result[4], result[5]
-            cursor.execute("select phone, name from user_info where user_id = '%s';" % send_user_id)
+            product["product_id"] = result[12]
+            cursor.execute("select phone, name, coalesce(image, '') as image from user_info where user_id = '%s';"
+                           % send_user_id)
             send_person = cursor.fetchone()
             completed_storage["send_phone"] = send_person[0] if send_person else ""
             completed_storage["send_person"] = send_person[1] if send_person else ""
-
-            cursor.execute("select phone, name from user_info where user_id = '%s';" % receive_user_id)
+            if send_person:
+                completed_storage["send_image"] = alioss.joint_image(send_person[2].tobytes().decode()) if \
+                    isinstance(send_person[2], memoryview) else alioss.joint_image(send_person[2])
+            else:
+                completed_storage["send_image"] = alioss.joint_image(None)
+            cursor.execute("select phone, name, coalesce(image, '') as image from user_info where user_id = '%s';"
+                           % receive_user_id)
             receive_person = cursor.fetchone()
             completed_storage["receive_phone"] = receive_person[0] if receive_person else ""
             completed_storage["receive_person"] = receive_person[1] if receive_person else ""
+            if receive_person:
+                completed_storage["receive_image"] = alioss.joint_image(receive_person[2].tobytes().decode()) if \
+                    isinstance(receive_person[2], memoryview) else alioss.joint_image(receive_person[2])
+            else:
+                completed_storage["receive_image"] = alioss.joint_image(None)
 
             data["product"], data["completed_storage"] = product, completed_storage
 
@@ -677,7 +699,7 @@ class StoreCompletedStorageDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     def post(self, request):
         """完工入库单-入库操作"""
@@ -695,8 +717,7 @@ class StoreCompletedStorageDetail(APIView):
         # print(phone, factory_id, permission)
         user_id = phone if not user_id else user_id
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_store_completed_storage where id = '%s' and factory = '%s';" % (
             completed_id, factory_id))
@@ -722,7 +743,7 @@ class StoreCompletedStorageDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StorePurchaseWarehousingMain(APIView):
@@ -739,13 +760,9 @@ class StorePurchaseWarehousingMain(APIView):
         else:
             condition = ""
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select
@@ -815,7 +832,7 @@ class StorePurchaseWarehousingMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StorePurchaseWarehousingDetail(APIView):
@@ -828,10 +845,10 @@ class StorePurchaseWarehousingDetail(APIView):
         if not purchase_id:
             return Response({"res": 1, "errmsg": "缺少参数id！"}, status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         sql_check = "select count(1) from base_store_purchase_warehousing where id = '%s' and factory = '%s';" % \
                     (purchase_id, factory_id)
@@ -841,8 +858,8 @@ class StorePurchaseWarehousingDetail(APIView):
           t1.id, t1.state, coalesce(t1.income_time, 0) as income_time,
           t2.id as order_id, t2.order_type,
           coalesce(t4.name,'') as company_name, coalesce(t6.name, '') as name, coalesce(t6.phone, '') as phone, 
-          coalesce(concat(t4.region, t4.address), '') as address,
-          coalesce(t7.phone, '') as phone, coalesce(t7.name, '') as income_person
+          coalesce(t4.region || t4.address, '') as address,
+          coalesce(t7.phone, '') as phone, coalesce(t7.name, '') as income_person, t7.image
         from
           (
             select 
@@ -901,7 +918,12 @@ class StorePurchaseWarehousingDetail(APIView):
             order_id = result[3]
             client["style"], client["company_name"], client["name"], client["phone"], client["address"] = \
                 result[4], result[5], result[6], result[7], result[8]
-            income["income_time"], income["phone"], income["income_person"] = result[2], result[9], result[10]
+            income["income_time"], income["phone"], income["income_person"], income["image"] = result[2], result[9], \
+                                                                                               result[
+                                                                                                   10], alioss.joint_image(
+                result[11].tobytes().decode()) if isinstance(result[11], memoryview) \
+                                                                                                   else alioss.joint_image(
+                result[11])
             data["client"] = client
             data["income"] = income
 
@@ -911,7 +933,7 @@ class StorePurchaseWarehousingDetail(APIView):
                 di = dict()
                 di["name"] = res[2]
                 di["category"] = res[4]
-                di["count"] = res[0]
+                di["count"] = round(res[0], 2)
                 di["unit"] = res[3]
                 di["price"] = res[1]
                 di["money"] = float(round(di["count"] * di["price"], 2))
@@ -926,7 +948,7 @@ class StorePurchaseWarehousingDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     def post(self, request):
         """采购入库单-入库 0: 未入库, 1: 已入库"""
@@ -934,14 +956,10 @@ class StorePurchaseWarehousingDetail(APIView):
         if not warehousing_id:
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
 
-        user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_store_purchase_warehousing where id = '%s' and factory = '%s';" % (
             warehousing_id, factory_id))
@@ -959,7 +977,7 @@ class StorePurchaseWarehousingDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StorePickingListMain(APIView):
@@ -977,13 +995,9 @@ class StorePickingListMain(APIView):
         else:
             condition = ""
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select
@@ -1089,7 +1103,7 @@ class StorePickingListMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StorePickingListDetail(APIView):
@@ -1106,8 +1120,9 @@ class StorePickingListDetail(APIView):
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
         user_id = phone if not user_id else user_id
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         check_sql = "select count(1) from base_store_picking_list where factory = '%s' and id = '%s';" % (
             factory_id, picking_id)
@@ -1118,10 +1133,11 @@ class StorePickingListDetail(APIView):
 
         sql = """
         select
-          t1.id, t1.product_task_id, t1.supplement_id, t1.state, t1.style, coalesce(t1.time, 0) as time, 
-          coalesce(t1.waited_time, 0) as waited_time, coalesce(t1.picking_time, 0) as picking_time,
-          coalesce(t2.name, '') as send_person, coalesce(t2.phone, '') as send_phone,
-          coalesce(t3.name, '') as accept_person, coalesce(t3.phone, '') as accept_phone          
+          t1.id, t1.product_task_id, t1.supplement_id, t1.state, t1.style, coalesce(t1.picking_time, 0) as picking_time,
+          coalesce(t2.name, '') as send_person, coalesce(t2.phone, '') as send_phone, 
+          coalesce(t2.image, '') as send_image,
+          coalesce(t3.name, '') as accept_person, coalesce(t3.phone, '') as accept_phone, 
+          coalesce(t3.image, '') as accept_image
         from
           (
             select 
@@ -1138,7 +1154,7 @@ class StorePickingListDetail(APIView):
         """
         task_sql = """
         select
-          coalesce(t1.target_count, 0) as target_count, t1.material_ids, t1.material_counts,
+          t1.id, coalesce(t1.target_count, 0) as target_count, t1.material_ids, t1.material_counts,
           coalesce(t2.name, '') as name, coalesce(t2.unit, '') as unit, coalesce(t3.name, '') as category
         from
           (
@@ -1156,7 +1172,7 @@ class StorePickingListDetail(APIView):
         """
         supplement_sql = """
         select
-          coalesce(t2.target_count, 0) as target_count, t1.material_ids, t1.material_counts,
+          t2.id, coalesce(t2.target_count, 0) as target_count, t1.material_ids, t1.material_counts,
           coalesce(t3.name, '') as name, coalesce(t3.unit, '') as unit, coalesce(t4.name, '') as category          
         from
           (
@@ -1178,15 +1194,58 @@ class StorePickingListDetail(APIView):
         where 
           id = '%s';
         """
+
+        plan_picking_time = """
+        select
+          t2.plan_arrival_time, t3.deliver_days, coalesce(t5.process_time, 0) as process_time
+        from
+          (
+            select 
+              *
+            from 
+              base_store_picking_list
+            where 
+              factory = '%s' and id = '%s'
+          ) t1
+        left join 
+          base_orders t2 on t1.order_id = t2.id
+        left join 
+          (select * from base_clients where factory = '%s') t3 on t2.client_id = t3.id
+        left join 
+          base_product_task t4 on t1.product_task_id = t4.id
+        left join 
+          (
+            select 
+              product_id, sum(unit_time) as process_time 
+            from 
+              base_product_processes 
+            where factory = '%s' 
+            group by product_id
+          ) t5 on t4.product_id = t5.product_id;
+        """ % (factory_id, picking_id, factory_id, factory_id)
+
         try:
             data, materials_list = dict(), list()
             cursor.execute(sql % (factory_id, picking_id))
             result1 = cursor.fetchone()
 
-            data["id"], data["state"], data["style"], data["time"], data["waited_time"], data["picking_time"], data[
-                "send_person"], data["send_phone"], data["accept_person"], data["accept_phone"] = result1[0], result1[
-                3], result1[4], result1[5], result1[6], result1[7], result1[8], result1[9], result1[10], result1[11]
+            data["id"], data["state"], data["style"], data["picking_time"], data["send_person"], data["send_phone"], \
+                data["accept_person"], data["accept_phone"], = result1[0], result1[3], result1[4], result1[5], \
+                result1[6], result1[7], result1[9], result1[10]
+            data["send_image"] = alioss.joint_image(result1[8].tobytes().decode()) \
+                if isinstance(result1[8], memoryview) else alioss.joint_image(result1[8])
+            data["accept_image"] = alioss.joint_image(result1[11].tobytes().decode()) \
+                if isinstance(result1[11], memoryview) else alioss.joint_image(result1[11])
+
             task_id, supplement_id = result1[1], result1[2]
+
+            # 领料单添加 期望领料时间 = 订单期望送达时间 - 送达天数 - 生产用时(分钟)
+            cursor.execute(plan_picking_time)
+            result_time = cursor.fetchone()
+            # print(result_time)
+            plan_arrival_time, deliver_days, process_time = result_time
+            data["expect_picking_time"] = arrow.get(plan_arrival_time).shift(
+                days=-round(deliver_days if deliver_days else 0, 1)).timestamp - int(process_time * 60)
 
             # 领料单类型，0: 生产单直接创建，1:补料单创建
             if data["style"] == "0":
@@ -1196,10 +1255,9 @@ class StorePickingListDetail(APIView):
             else:
                 return Response({"res": 1, "errmsg": "领料单类型错误！"}, status=status.HTTP_200_OK)
             result2 = cursor.fetchone()
-            data["target_count"], data["name"], data["unit"], data["category"] = result2[0], result2[3], result2[4], \
-                                                                                 result2[5]
-
-            material_ids, material_counts = result2[1] or [], result2[2] or []
+            data["product_id"], data["target_count"], data["name"], data["unit"], data["category"] = result2[0], \
+                result2[1], result2[4], result2[5], result2[6]
+            material_ids, material_counts = result2[2] or [], result2[3] or []
             if data["style"] == "0":
                 # 生产单中的物料数量（单个产品）,要乘以产生的数量
                 material_counts = [i * data["target_count"] for i in material_counts]
@@ -1223,7 +1281,7 @@ class StorePickingListDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     def post(self, request):
         """领料单状态，0: 未备料，1: 待领料，2: 已领料"""
@@ -1241,8 +1299,7 @@ class StorePickingListDetail(APIView):
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
         user_id = phone if not user_id else user_id
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         try:
             content = update_picking_list(picking_id, state, user_id, factory_id, action)
@@ -1251,7 +1308,7 @@ class StorePickingListDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreStorageMain(APIView):
@@ -1262,15 +1319,19 @@ class StoreStorageMain(APIView):
         # 仓库统计分析 复用，带时间开始 截止参数
         start = request.query_params.get("start")
         end = request.query_params.get("end")
+        choice = request.query_params.get("choice", "all")  # 某个仓库id
 
         if start and end:
             condition = " and t1.time >= {} and t1.time < {} ".format(start, end)
         else:
             condition = ""
+        if choice == "all":
+            condition_2 = ""
+        else:
+            condition_2 = " and t4.uuid = '{}' ".format(choice)
 
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         materials_sql = """
         select
@@ -1278,30 +1339,33 @@ class StoreStorageMain(APIView):
           array_agg(coalesce(t1.actual, 0) + coalesce(t1.on_road, 0) - coalesce(t1.prepared, 0) - 
           coalesce(t1.safety, 0)) as available,
           array_agg(coalesce(t2.name, '')) as name, array_agg(coalesce(t2.unit, '')) as unit,
-          coalesce(t3.name, '') as category
+          coalesce(t3.name, '') as category,
+          array_agg(coalesce(t4.name, '')) as store_name
         from
           base_materials_storage t1
         left join base_materials_pool t2 on
           t1.material_id = t2.id
         left join base_material_category_pool t3 on
           t2.category_id = t3.id
-        where t1.factory = '%s' """ % factory_id + condition + """
+        left join (select * from base_multi_storage where factory = '%s') t4 on
+          t1.uuid = t4.uuid
+        where t1.factory = '%s' """ % (factory_id, factory_id) + condition + condition_2 + """
         group by t3.id
         order by 
           category desc;
         """
 
-        materials_log_sql = """
-        select
-          coalesce(time, 0) as recent
-        from
-          base_materials_log
-        where 
-          material_id = '%s' and type = 'actual' and count < 0
-        order by 
-          time desc 
-        limit 1;
-        """
+        # materials_log_sql = """
+        # select
+        #   coalesce(time, 0) as recent
+        # from
+        #   base_materials_log
+        # where
+        #   material_id = '%s' and type = 'actual' and count < 0
+        # order by
+        #   time desc
+        # limit 1;
+        # """
 
         products_sql = """
         select
@@ -1309,30 +1373,33 @@ class StoreStorageMain(APIView):
           array_agg(coalesce(t1.actual, 0) + coalesce(t1.pre_product, 0) - coalesce(t1.prepared, 0) - 
           coalesce(t1.safety, 0)) as available,
           array_agg(coalesce(t2.name, '')) as name, array_agg(coalesce(t2.unit, '')) as unit,
-          coalesce(t3.name, '') as category
+          coalesce(t3.name, '') as category,
+          array_agg(coalesce(t4.name, '')) as store_name
         from
           base_products_storage t1
         left join base_materials_pool t2 on
           t1.product_id = t2.id
         left join base_material_category_pool t3 on
           t2.category_id = t3.id
-        where t1.factory = '%s' """ % factory_id + condition + """
+        left join (select * from base_multi_storage where factory = '%s') t4 on
+          t1.uuid = t4.uuid
+        where t1.factory = '%s' """ % (factory_id, factory_id) + condition + condition_2 + """
         group by t3.id
         order by 
           category desc;
         """
 
-        products_log_sql = """
-        select
-          coalesce(time, 0) as recent
-        from
-          base_products_log
-        where 
-          product_id = '%s' and type = 'actual' and count < 0
-        order by 
-          time desc 
-        limit 1;
-        """
+        # products_log_sql = """
+        # select
+        #   coalesce(time, 0) as recent
+        # from
+        #   base_products_log
+        # where
+        #   product_id = '%s' and type = 'actual' and count < 0
+        # order by
+        #   time desc
+        # limit 1;
+        # """
 
         products, materials, not_category_products, not_category_materials = [], [], [], []
         try:
@@ -1344,16 +1411,17 @@ class StoreStorageMain(APIView):
                 di = dict()
                 li = list()
                 di["category"] = ma[4]
-                temp = list(zip(ma[0], ma[1], ma[2], ma[3]))
+                temp = list(zip(ma[0], ma[1], ma[2], ma[3], ma[5]))
                 for te in temp:
                     dt = dict()
                     dt["id"] = te[0]
-                    cursor.execute(materials_log_sql % dt["id"])
-                    recent = cursor.fetchone()
-                    dt["recent"] = recent[0] if recent else 0
+                    # cursor.execute(materials_log_sql % dt["id"])
+                    # recent = cursor.fetchone()
+                    # dt["recent"] = recent[0] if recent else 0
                     dt["available"] = round(te[1] if te[1] else 0, 2)
                     dt["name"] = te[2]
                     dt["unit"] = te[3]
+                    dt["store_name"] = te[4]
                     li.append(dt)
                 di["materials"] = li
                 if di["category"] == "其他":
@@ -1368,16 +1436,17 @@ class StoreStorageMain(APIView):
                 di = dict()
                 li = list()
                 di["category"] = pr[4]
-                temp = list(zip(pr[0], pr[1], pr[2], pr[3]))
+                temp = list(zip(pr[0], pr[1], pr[2], pr[3], pr[5]))
                 for te in temp:
                     dt = dict()
                     dt["id"] = te[0]
-                    cursor.execute(products_log_sql % dt["id"])
-                    recent = cursor.fetchone()
-                    dt["recent"] = recent[0] if recent else 0
+                    # cursor.execute(products_log_sql % dt["id"])
+                    # recent = cursor.fetchone()
+                    # dt["recent"] = recent[0] if recent else 0
                     dt["available"] = round(te[1] if te[1] else 0, 2)
                     dt["name"] = te[2]
                     dt["unit"] = te[3]
+                    dt["store_name"] = te[4]
                     li.append(dt)
                 di["products"] = li
                 if di["category"] == "其他":
@@ -1392,7 +1461,7 @@ class StoreStorageMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreStorageDetail(APIView):
@@ -1403,9 +1472,9 @@ class StoreStorageDetail(APIView):
         id_ = request.query_params.get("id")  # 产品id/物料id
         date = request.query_params.get("date", "3")  # 1: 月， 2: 年, 3：周
 
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         if date == "1":
             condition = " to_char(to_timestamp(time), 'YYYY-MM') as date "
@@ -1427,13 +1496,16 @@ class StoreStorageDetail(APIView):
           (coalesce(t1.actual, 0) + coalesce(t1.pre_product, 0) - coalesce(t1.prepared, 0) - 
           coalesce(t1.safety, 0)) as available,
           t2.id, coalesce(t2.name, '') as name, coalesce(t2.unit, '') as unit,
-          coalesce(t3.name, '') as category
+          coalesce(t3.name, '') as category,
+          coalesce(t4.name, '') as store
         from
           base_products_storage t1
         left join base_materials_pool t2 on
           t1.product_id = t2.id
         left join base_material_category_pool t3 on 
           t2.category_id = t3.id
+        left join base_multi_storage t4 on
+          t1.uuid = t4.uuid
         where 
           t1.factory = '%s' and t1.product_id = '%s';
         """
@@ -1474,13 +1546,16 @@ class StoreStorageDetail(APIView):
           (coalesce(t1.actual, 0) + coalesce(t1.on_road, 0) - coalesce(t1.prepared, 0) - coalesce(t1.safety, 0)) 
           as available,
           t2.id, coalesce(t2.name, '') as name, coalesce(t2.unit, '') as unit,
-          coalesce(t3.name, '') as category
+          coalesce(t3.name, '') as category,
+          coalesce(t4.name, '') as store
         from
           base_materials_storage t1
         left join base_materials_pool t2 on
           t1.material_id = t2.id
         left join base_material_category_pool t3 on
           t2.category_id = t3.id
+        left join base_multi_storage t4 on
+          t1.uuid = t4.uuid
         where 
           t1.factory = '%s' and t1.material_id = '%s';
         """
@@ -1514,7 +1589,8 @@ class StoreStorageDetail(APIView):
           type = 'actual' and factory = '%s' and material_id = '%s' and time >= %d and time < %d;
         """
 
-        # print("product_log_sql", product_log_sql), print("material_log_sql", material_log_sql)
+        # print("product_log_sql=", product_log_sql % (factory_id, id_))
+        # print("material_log_sql=", material_log_sql % (factory_id, id_))
         properties, data = {}, []
         try:
             if type_ == "product":
@@ -1525,9 +1601,10 @@ class StoreStorageDetail(APIView):
                 cursor.execute(product_sql % (factory_id, id_))
                 result = cursor.fetchone()
                 properties["actual"], properties["pre_product"], properties["prepared"], properties["safety"], \
-                properties["available"], properties["id"], properties["name"], properties["unit"], properties[
-                    "category"] = result[0], result[1], result[2], result[3], result[4], result[5], result[6], result[
-                    7], result[8]
+                    properties["available"], properties["id"], properties["name"], properties["unit"], properties[
+                    "category"] = round(result[0], 2), round(result[1], 2), round(result[2], 2), round(result[3], 2), \
+                    round(result[4], 2), result[5], result[6], result[7], result[8]
+                properties["store"] = result[9]
                 cursor.execute(product_log_sql % (factory_id, id_))
                 result2 = cursor.fetchall()
                 for res in result2:
@@ -1571,6 +1648,8 @@ class StoreStorageDetail(APIView):
                             dt["parent_type"] = "产品出库"
                         elif temp[4] == "2":
                             dt["parent_type"] = "库存盘点"
+                        elif temp[4] == "3":
+                            dt["parent_type"] = "生产任务单"
                         dt["count"] = temp[2]
                         dt["time"] = temp[3]
                         dt["source"] = temp[4]
@@ -1579,6 +1658,10 @@ class StoreStorageDetail(APIView):
                     di["history"] = history
                     data.append(di)
                 properties["data"] = data
+
+                # 二维码json内容
+                content = {"type": "10", "id": id_, "share": user_id}
+                properties["qr_code"] = content
 
             elif type_ == "material":
                 cursor.execute(material_id_check)
@@ -1589,8 +1672,9 @@ class StoreStorageDetail(APIView):
                 result = cursor.fetchone()
                 properties["actual"], properties["on_road"], properties["prepared"], properties["safety"], properties[
                     "available"], properties["id"], properties["name"], properties["unit"], properties["category"] = \
-                    result[0], result[1], result[2], result[3], result[4], result[5], result[6], result[7], result[8]
-
+                    round(result[0], 2), round(result[1], 2), round(result[2], 2), round(result[3], 2), \
+                    round(result[4], 2), result[5], result[6], result[7], result[8]
+                properties["store"] = result[9]
                 cursor.execute(material_log_sql % (factory_id, id_))
                 result2 = cursor.fetchall()
                 for res in result2:
@@ -1647,6 +1731,9 @@ class StoreStorageDetail(APIView):
                     data.append(di)
                 properties["data"] = data
 
+                # 二维码json内容
+                content = {"type": "9", "id": id_, "share": user_id}
+                properties["qr_code"] = content
             else:
                 return Response({"res": 1, "errmsg": "类型错误！"}, status=status.HTTP_200_OK)
 
@@ -1655,7 +1742,7 @@ class StoreStorageDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreCheckMain(APIView):
@@ -1664,8 +1751,7 @@ class StoreCheckMain(APIView):
 
     def get(self, request):
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select
@@ -1705,12 +1791,12 @@ class StoreCheckMain(APIView):
                     di["unit"] = res[7]
                     state_dict[state].append(di)
 
-            return Response({"0": waited, "1": approval_pass + approval_refuse}, status=status.HTTP_200_OK)
+            return Response({"0": waited, "1": approval_pass, "2": approval_refuse}, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreCheckDetail(APIView):
@@ -1723,8 +1809,8 @@ class StoreCheckDetail(APIView):
             return Response({"res": 1, "errmsg": "缺少参数id！"}, status=status.HTTP_200_OK)
 
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_storage_check where id = '%s';" % id_)
         id_check = cursor.fetchone()[0]
@@ -1739,7 +1825,9 @@ class StoreCheckDetail(APIView):
           coalesce(t2.name, '') as name, coalesce(t2.unit, '') as unit,
           coalesce(t3.name, '') as check_person, t3.phone as check_phone,
           coalesce(t4.name, '') as approval_person, coalesce(t4.phone, '') as approval_phone,
-          coalesce(t5.name, '') as category
+          coalesce(t5.name, '') as category,
+          t3.image, t4.image,
+          coalesce(t1.reason, '') as reason
         from
           (
             select 
@@ -1764,11 +1852,15 @@ class StoreCheckDetail(APIView):
             result = cursor.fetchone()
             material_id = result[0]
             data["id"], data["update"], data["state"], data["more_less"], data["remark"], data["check_time"], \
-            data["approval_time"], data["name"], data["unit"], data["check_person"], data["check_phone"], \
-            data["approval_person"], data["approval_phone"], data["category"] = result[1], round(result[2], 2), result[
-                3], result[4], result[5], result[6], result[7], result[8], result[9], result[10], result[11], result[
-                                                                                    12], result[13], result[14]
-
+                data["approval_time"], data["name"], data["unit"], data["check_person"], data["check_phone"], \
+                data["approval_person"], data["approval_phone"], data["category"] = result[1], round(result[2], 2), \
+                result[3], result[4], result[5], result[6], result[7], result[8], result[9], result[10], result[11], \
+                result[12], result[13], result[14]
+            data["check_image"] = alioss.joint_image(result[15].tobytes().decode()) if \
+                isinstance(result[15], memoryview) else alioss.joint_image(result[15])
+            data["approval_image"] = alioss.joint_image(result[16].tobytes().decode()) if \
+                isinstance(result[16], memoryview) else alioss.joint_image(result[16])
+            data["reason"] = result[17]
             cursor.execute(
                 "select count(1) from base_products where factory = '%s' and id = '%s';" % (factory_id, material_id))
             products_check = cursor.fetchone()[0]
@@ -1791,7 +1883,7 @@ class StoreCheckDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     @method_decorator(store_approval_decorator)
     def post(self, request):
@@ -1803,6 +1895,7 @@ class StoreCheckDetail(APIView):
 
         id_ = request.data.get("id")  # 库存盘点单号id
         state = request.data.get("state")
+        remark = request.data.get("remark", "")
 
         if not all([id_, state]):
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
@@ -1811,12 +1904,9 @@ class StoreCheckDetail(APIView):
 
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
         rabbitmq = UtilsRabbitmq()
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         cursor.execute(
             "select count(1) from base_storage_check where factory = '%s' and id = '%s';" % (factory_id, id_))
@@ -1837,10 +1927,10 @@ class StoreCheckDetail(APIView):
         update
           base_storage_check
         set
-          state = '%s', approval = '%s', approval_time = %d
+          state = '%s', approval = '%s', approval_time = %d, remark = '%s'
         where 
           factory = '%s' and id = '%s'
-        """ % (state, phone, timestamp, factory_id, id_)
+        """ % (state, phone, timestamp, remark, factory_id, id_)
 
         update_products_sql = """
         update
@@ -1897,7 +1987,7 @@ class StoreCheckDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreCheckNew(APIView):
@@ -1907,8 +1997,8 @@ class StoreCheckNew(APIView):
     def post(self, request, type_):
         id_ = request.data.get("id")
         update = request.data.get("update")
-        remark = request.data.get("remark")
-        if not all([type_, id_, update]):
+        reason = request.data.get("reason")
+        if not all([type_, id_, update, reason]):
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
         if type_ not in ["material", "product"]:
             return Response({"res": 1, "errmsg": "参数type错误！"}, status=status.HTTP_200_OK)
@@ -1922,45 +2012,14 @@ class StoreCheckNew(APIView):
         factory_id = request.redis_cache["factory_id"]
         seq_id = request.redis_cache["seq_id"]
         user_id = phone if not user_id else user_id
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         storage_check_sql = """
         insert into 
-          base_storage_check (id, factory, material_id, type, before, after, more_less, remark, creator, time)
+          base_storage_check (id, factory, material_id, type, before, after, more_less, creator, time, reason)
         values 
-          ('%s', '%s', '%s', '%s', %f, %f, '%s', '%s', '%s', %d);
+          ('%s', '%s', '%s', '%s', %f, %f, '%s', '%s', %d, '%s');
         """
-
-        # materials_log_sql = """
-        # insert into
-        #   base_materials_log (material_id, type, count, source, source_id, factory, time)
-        # values
-        #   ('%s', '%s', %f, '%s', '%s', '%s', %d);
-        # """
-        # materials_storage_sql = """
-        # update
-        #   base_materials_storage
-        # set
-        #   actual = %f
-        # where
-        #   factory = '%s' and material_id = '%s';
-        # """
-        #
-        # products_log_sql = """
-        # insert into
-        #   base_products_log (product_id, type, count, source, source_id, factory, time)
-        # values
-        #   ('%s', '%s', %f, '%s', '%s', '%s', %d);
-        # """
-        # products_storage_sql = """
-        # update
-        #   base_products_storage
-        # set
-        #   actual = %f
-        # where
-        #   factory = '%s' and product_id = '%s';
-        # """
 
         try:
             serial_number = generate_module_uuid(PrimaryKeyType.storage_check.value, factory_id, seq_id)
@@ -1968,15 +2027,9 @@ class StoreCheckNew(APIView):
             if type_ == "material":
                 cursor.execute("select coalesce(actual, 0) as actual from base_materials_storage where factory = '%s' "
                                "and material_id = '%s';" % (factory_id, id_))
-                # cursor.execute(
-                #     materials_log_sql % (id_, 'store_check', update, '2', serial_number, factory_id, timestamp))
-                # cursor.execute(materials_storage_sql % (update, factory_id, id_))
             elif type_ == "product":
                 cursor.execute("select coalesce(actual, 0) as actual from base_products_storage where factory = '%s' "
                                "and product_id = '%s';" % (factory_id, id_))
-                # cursor.execute(
-                #     products_log_sql % (id_, 'store_check', update, '2', serial_number, factory_id, timestamp))
-                # cursor.execute(products_storage_sql % (update, factory_id, id_))
             else:
                 return Response({"res": 1, "errmsg": "类型错误！"}, status=status.HTTP_200_OK)
 
@@ -1988,7 +2041,7 @@ class StoreCheckNew(APIView):
             more_less = "0" if update > before else "1"
 
             cursor.execute(storage_check_sql % (serial_number, factory_id, id_, type_, before, update, more_less,
-                                                remark, user_id, timestamp))
+                                                user_id, timestamp, reason))
             connection.commit()
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
@@ -1996,7 +2049,7 @@ class StoreCheckNew(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreTemporaryPurchaseMain(APIView):
@@ -2005,8 +2058,7 @@ class StoreTemporaryPurchaseMain(APIView):
 
     def get(self, request):
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         waited, approval, canceled = [], [], []
         state_dict = {"0": waited, "1": approval, "2": canceled}
@@ -2061,7 +2113,7 @@ class StoreTemporaryPurchaseMain(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreTemporaryPurchaseDetail(APIView):
@@ -2077,8 +2129,8 @@ class StoreTemporaryPurchaseDetail(APIView):
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
 
         factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        alioss = AliOss()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_store_temporary_purchase where factory = '%s' and id = '%s';" % (
             factory_id, id_))
@@ -2091,7 +2143,8 @@ class StoreTemporaryPurchaseDetail(APIView):
           t1.id, t1.state, coalesce(t1.remark, '') as remark, coalesce(t1.time, 0) as time, 
           coalesce(t1.approval_time, 0) as approval_time, 
           coalesce(t2.name, '') as creator, coalesce(t2.phone, '') as phone,
-          coalesce(t3.name, '') as approval, coalesce(t3.phone, '') as approval_phone
+          coalesce(t3.name, '') as approval, coalesce(t3.phone, '') as approval_phone,
+          coalesce(t1.reason, '') as reason, t2.image, t3.image
         from
           base_store_temporary_purchase t1
         left join user_info t2 on
@@ -2111,22 +2164,28 @@ class StoreTemporaryPurchaseDetail(APIView):
         from
           base_store_temporary_purchase_materials t1
         left join 
-          base_materials t2 on t1.material_id = t2.id
+          (select * from base_materials where factory = '%s') t2 on t1.material_id = t2.id
         left join 
           base_materials_pool t3 on t2.id = t3.id
         left join 
           base_material_category_pool t4 on t3.category_id = t4.id
         where 
           t1.purchase_id = '%s';
-        """ % id_
+        """ % (factory_id, id_)
+
         try:
             data, products, total_money = dict(), list(), 0
             cursor.execute(sql)
             result1 = cursor.fetchone()
             data["id"], data["state"], data["remark"], data["time"], data["approval_time"], data["creator"], \
-            data["phone"], data["approval"], data["approval_phone"] = result1[0], result1[1], result1[2], result1[3], \
-                                                                      result1[4], result1[5], result1[6], result1[7], \
-                                                                      result1[8]
+            data["phone"], data["approval"], data["approval_phone"], data["reason"] = result1[0], result1[1], \
+                                                                                      result1[2], result1[3], result1[
+                                                                                          4], result1[5], result1[6], \
+                                                                                      result1[7], result1[8], result1[9]
+            data["creator_image"] = alioss.joint_image(result1[10].tobytes().decode()) if \
+                isinstance(result1[10], memoryview) else alioss.joint_image(result1[10])
+            data["approval_image"] = alioss.joint_image(result1[11].tobytes().decode()) \
+                if isinstance(result1[11], memoryview) else alioss.joint_image(result1[11])
 
             cursor.execute(materials_sql)
             result2 = cursor.fetchall()
@@ -2147,7 +2206,7 @@ class StoreTemporaryPurchaseDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     @method_decorator(store_approval_decorator)
     def post(self, request):
@@ -2159,6 +2218,7 @@ class StoreTemporaryPurchaseDetail(APIView):
 
         id_ = request.data.get("id")
         state = request.data.get("state")
+        remark = request.data.get("remark", "")
         if not all([id_, state]):
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
         if state not in ["1", "2", "3"]:
@@ -2168,13 +2228,10 @@ class StoreTemporaryPurchaseDetail(APIView):
         user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
         user_id = phone if not user_id else user_id
 
         rabbitmq = UtilsRabbitmq()
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         cursor.execute("select count(1) from base_store_temporary_purchase where id = '%s';" % id_)
         id_check = cursor.fetchone()[0]
@@ -2190,7 +2247,7 @@ class StoreTemporaryPurchaseDetail(APIView):
         update
           base_store_temporary_purchase
         set
-          purchase_id = '%s', state = '%s', approval = '%s', approval_time = %d
+          purchase_id = '%s', state = '%s', approval = '%s', approval_time = %d, remark = '%s'
         where
           id = '%s';
         """
@@ -2211,7 +2268,7 @@ class StoreTemporaryPurchaseDetail(APIView):
             timestamp = arrow.now().timestamp
 
             if state == "1":  # 临时申购单审批通过，生成采购单
-                cursor.execute(update_sql % (serial_number, '1', user_id, timestamp, id_))
+                cursor.execute(update_sql % (serial_number, '1', user_id, timestamp, remark, id_))
                 cursor.execute(materials_sql % (factory_id, id_))
                 result = cursor.fetchall()
                 materials = [dict(zip(["id", "count"], res)) for res in result]
@@ -2224,12 +2281,12 @@ class StoreTemporaryPurchaseDetail(APIView):
                            'params': {'fac': factory_id, 'id': id_, 'state': '2'}}
                 rabbitmq.send_message(json.dumps(message))
             elif state == "2":  # 临时申购单审批不通过
-                cursor.execute(update_sql % ('', '2', user_id, timestamp, id_))
+                cursor.execute(update_sql % ('', '2', user_id, timestamp, remark, id_))
                 message = {'resource': 'PyTemporaryPurchase', 'type': 'POST',
                            'params': {'fac': factory_id, 'id': id_, 'state': '3'}}
                 rabbitmq.send_message(json.dumps(message))
             else:  # 取消
-                cursor.execute(update_sql % ('', '3', user_id, timestamp, id_))
+                cursor.execute(update_sql % ('', '3', user_id, timestamp, remark, id_))
             connection.commit()
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
@@ -2237,7 +2294,7 @@ class StoreTemporaryPurchaseDetail(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class StoreTemporaryPurchaseNew(APIView):
@@ -2245,23 +2302,20 @@ class StoreTemporaryPurchaseNew(APIView):
     permission_classes = [StorePermission]
 
     def post(self, request):
-        remark = request.data.get("remark", "")
+        reason = request.data.get("reason", "")
         materials = request.data.get("materials", [])
 
         seq_id = request.redis_cache["seq_id"]
         user_id = request.redis_cache["user_id"]
         phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
         user_id = phone if not user_id else user_id
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         insert into
-          base_store_temporary_purchase (id, factory, state, remark, creator, time) 
+          base_store_temporary_purchase (id, factory, state, reason, creator, time) 
         values 
           ('%s', '%s', '0', '%s', '%s', %d);
         """
@@ -2275,7 +2329,7 @@ class StoreTemporaryPurchaseNew(APIView):
         try:
             serial_number = generate_module_uuid(PrimaryKeyType.temporary_purchase.value, factory_id, seq_id)
 
-            cursor.execute(sql % (serial_number, factory_id, remark, user_id, int(time.time())))
+            cursor.execute(sql % (serial_number, factory_id, reason, user_id, int(time.time())))
             for material in materials:
                 cursor.execute(materil_sql % (serial_number, material["id"], material["count"]))
             connection.commit()
@@ -2291,7 +2345,7 @@ class StoreTemporaryPurchaseNew(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "服务器错误！"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class GenerateModuleUuid(APIView):

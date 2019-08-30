@@ -202,3 +202,29 @@ def order_approval_decorator(func):
     return wrapper
 
 
+def purchase_decorator(func):
+    """采购普通权限-方法装饰器"""
+
+    def wrapper(request, *args, **kwargs):
+        permission = request.redis_cache["permission"]
+        if "5" in permission or "55" in permission or "1" in permission:
+            request.flag = True
+        else:
+            request.flag = False
+        return func(request, *args, **kwargs)
+
+    return wrapper
+
+
+def purchase_approval_decorator(func):
+    """采购审批权限-方法装饰器"""
+
+    def wrapper(request, *args, **kwargs):
+        permission = request.redis_cache["permission"]
+        if "55" in permission or "1" in permission:
+            request.flag = True
+        else:
+            request.flag = False
+        return func(request, *args, **kwargs)
+
+    return wrapper

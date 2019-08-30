@@ -3,7 +3,7 @@ import datetime
 import time
 import json
 import apps_utils
-from constants import PrimaryKeyType
+from constants import PrimaryKeyType, OrderStatsState
 
 
 def correct_time(year, month):
@@ -48,7 +48,9 @@ def create_order(cursor, factory_id, seq_id, purchase_id):
             t1.plan_arrival_time,
             t2.product_id,
             t2.product_count,
-            t2.unit_price
+            t2.unit_price,
+            t1.remark,
+            t1.supplier_id
         from
             base_purchases t1
         left join base_purchase_materials t2 on
@@ -56,18 +58,28 @@ def create_order(cursor, factory_id, seq_id, purchase_id):
         where
             t1.id = '{}';'''.format(purchase_id)
 
-    order_id = apps_utils.generate_order_id(PrimaryKeyType.order.value, factory_id, seq_id)
-    order_sql = "insert into base_orders (id, factory, client_id, plan_arrival_time, order_type, create_time) " \
-                "values ('{}', '{}', '{}', {}, '2', extract(epoch from now())::integer)"
+    order_id = apps_utils.generate_module_uuid(PrimaryKeyType.order.value, factory_id, seq_id)
+
+    order_sql = "insert into base_orders (id, factory, client_id, plan_arrival_time, order_type, create_time, purchase_id) " \
+                "values ('{}', '{}', '{}', {}, '2', extract(epoch from now())::integer, '{}')"
     cursor.execute(sql)
     order_products = cursor.fetchall()
-    client_id = order_products[0]['0']
-    plan_arrival_time = order_products[0]['2']
-    cursor.execute(order_sql.format(order_id, factory_id, client_id, plan_arrival_time))
+
+    plan_arrival_time = order_products[0][2]
+    remark = order_products[0][6]
+    supplier_id = order_products[0][7]
+    # 订单状态记录
+    order_stats_sql = "insert into base_orders_stats (order_id, state, remark, optime) values " \
+                      "('{}', '{}', '{}', extract(epoch from now())::integer)".format(order_id,
+                                                                                      OrderStatsState.create.value,
+                                                                                      remark)
+    cursor.execute(order_sql.format(order_id, supplier_id, factory_id, plan_arrival_time, purchase_id))
+    cursor.execute(order_stats_sql)
+
     for product in order_products:
         product_sql = '''insert into base_order_products (order_id, product_id, product_count, unit_price) 
-                        values ('{}', '{}', '{}', '{}');'''.format(purchase_id, product['id'], product['count'],
-                                                                   product['unit_price'])
+                        values ('{}', '{}', '{}', '{}');'''.format(order_id, product[3], product[4],
+                                                                   product[5])
         cursor.execute(product_sql)
 
     message = {'resource': 'PyOrderState', 'type': 'PUT',

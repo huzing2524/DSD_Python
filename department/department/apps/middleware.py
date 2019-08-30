@@ -13,7 +13,7 @@ from constants import REDIS_CACHE
 
 def _redis_pool_number():
     """输出redis连接池数量"""
-    r = get_redis_connection("redis")  # Use the name you have defined for Redis in settings.CACHES
+    r = get_redis_connection("default")  # Use the name you have defined for Redis in settings.CACHES
     connection_pool = r.connection_pool
     print("Created connections so far: %d" % connection_pool._created_connections)
 

@@ -12,7 +12,7 @@ from permissions import ProductPermission, StoreProductPermission, StorePermissi
 from products.products_utils import create_id
 from store.store_utils import create_completed_storage, create_picking_list
 from purchase.purchase_utils import create_purchase
-from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid
+from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid, AliOss
 
 logger = logging.getLogger('django')
 
@@ -598,8 +598,6 @@ class ProductTaskList(APIView):
 
         result = {'wait': list(), 'ready': list(), 'working': list(), 'done': list()}
 
-        # 生产单状态 1:待备料，2:待拆单，3:物料不足，4:待领料, 5:生产中, 6:未入库，7:已入库
-        # 上面的状态已不适用
         for i in tasks_list:
             if i['state'] == ProductStateFour.wait.value:
                 # 判断该生产单是否已经有领料单，如果没有则创建
@@ -692,7 +690,7 @@ class ProductTaskDetailId(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": '服务器异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 产品部分信息
+        # 生产单部分信息
         sql_1 = """
             select 
                 t2.name, 
@@ -723,21 +721,19 @@ class ProductTaskDetailId(APIView):
                 factory = '{}'
                 and material_id = '{}';"""
 
-        target_1 = ['product', 'product_id', 'target', 'state', 'unit', 'material_ids', 'material_counts',
+        target_0 = ['product', 'product_id', 'target', 'state', 'unit', 'material_ids', 'material_counts',
                     'category_name']
 
         try:
             cur.execute(sql_1.format(Id))
             tmp = cur.fetchone() or []
-            product_info = dict(zip(target_1, tmp))
+            product_info = dict(zip(target_0, tmp))
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": '服务器异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # todo 如果前端可以调用之前的页面，就不用重复计算了
         # 状态 1:待备料，2:待拆单，3:物料不足，4:待领料, 5:生产中, 6:未入库，7:已入库
         if product_info['state'] == ProductStateFour.wait.value:
-            # 判断该生产单是否已经有领料单，如果没有则，则创建
             cur.execute(sql_2.format(Id))
             check_count = cur.fetchone()[0]
             if check_count != 0:
@@ -771,7 +767,7 @@ class ProductTaskDetailId(APIView):
                 product_info['state'] = '7'
 
         # 物料清单
-        target_2 = ['name', 'count', 'unit']
+        target_1 = ['name', 'count', 'unit']
         try:
             material_ids = product_info['material_ids']
             material_counts = product_info['material_counts']
@@ -782,7 +778,7 @@ class ProductTaskDetailId(APIView):
                 tmp = cur.fetchone()
                 material_names.append(tmp[0])
                 material_units.append(tmp[1])
-            material_list = [dict(zip(target_2, (x, '{}{}'.format(y * product_info['target'], z))))
+            material_list = [dict(zip(target_1, (x, '{}{}'.format(y * product_info['target'], z))))
                              for x, y, z in zip(material_names, material_counts, material_units)]
         except Exception as e:
             logger.error(e)
@@ -832,11 +828,11 @@ class ProductTaskDetailId(APIView):
                 on t2.process_id = t3.id 
             where t1.id = '{}' 
                 and t2.factory = '{}';"""
-        target_0 = ['id', 'start', 'end', 'take_time', 'good', 'ng', 'remark', 'time', 'creator']
+        target_2 = ['id', 'start', 'end', 'take_time', 'good', 'ng', 'remark', 'time', 'creator']
         try:
             cur.execute(sql_4.format(Id, factory_id))
             tmp = cur.fetchall()
-            q_list = [dict(zip(target_0, i)) for i in tmp]
+            q_list = [dict(zip(target_2, i)) for i in tmp]
             cur.execute(sql_5.format(Id, factory_id))
             tmp = cur.fetchall()
             q_all = dict()
@@ -875,15 +871,22 @@ class ProductTaskDetailId(APIView):
                 finish['good'] = process[-1].get('good', 0)
             else:
                 finish = dict()
+        result['process'] = process
+        result['finish'] = finish
 
+        # 完工入库：良品数和状态
         if product_info['state'] == '5':
             total_good = finish['good'] if finish else 0
             if total_good >= product_info['target']:
-                state = 0
+                done_state = 0
             elif total_good > 0:
-                state = 1
+                done_state = 1
             else:
-                state = 2
+                done_state = 2
+            result['total_good'] = total_good
+            result['done_state'] = done_state
+
+        # 与生产单相关联的补料单和退来单id
         sql_6 = "select id from base_material_return where product_task_id = '{}';"
         sql_7 = "select id from base_material_supplement where product_task_id = '{}';"
 
@@ -896,13 +899,7 @@ class ProductTaskDetailId(APIView):
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": 'server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        result['process'] = process
-        result['finish'] = finish
         result['related'] = related
-        if product_info['state'] == '5':
-            result['total_good'] = total_good
-            result['state'] = state
 
         postgresql.disconnect_postgresql(conn)
         return Response(result, status=status.HTTP_200_OK)
@@ -1358,6 +1355,7 @@ class ProductProductMaterialList(APIView):
             select 
                 t1.id, 
                 t2.name, 
+                t2.unit,
                 t3.id, 
                 t3.name
             from 
@@ -1372,7 +1370,7 @@ class ProductProductMaterialList(APIView):
                 factory = '{}'
             order by 
                 t1.time desc;"""
-        target = ['id', 'name', 'category_id', 'category_name']
+        target = ['id', 'name', 'unit', 'category_id', 'category_name']
         # 判断类型
         if Type == 'product':
             table = 'base_products'
@@ -1387,13 +1385,13 @@ class ProductProductMaterialList(APIView):
                 tmp = cur.fetchall()
                 pre_result = dict()
                 for i in tmp:
-                    if i[2] in pre_result:
-                        pre_result[i[2]].append(i)
+                    if i[3] in pre_result:
+                        pre_result[i[3]].append(i)
                     else:
-                        pre_result[i[2]] = [i]
+                        pre_result[i[3]] = [i]
                 result = list()
                 for i in pre_result:
-                    result.append({'name': pre_result[i][0][3], 'list': [dict(zip(target[:3], j)) for j in pre_result[i]]})
+                    result.append({'name': pre_result[i][0][4], 'list': [dict(zip(target[:4], j)) for j in pre_result[i]]})
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": '服务器异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1426,6 +1424,9 @@ class ProductProductMaterialDetailId(APIView):
                         t2.time, 
                         t1.category_id,
                         t2.loss_coefficient, 
+                        t2.lowest_count, 
+                        t2.lowest_package, 
+                        t2.lowest_product, 
                         t3.safety
                     from 
                         base_materials_pool t1 
@@ -1439,7 +1440,8 @@ class ProductProductMaterialDetailId(APIView):
                         and t3.factory = '{0}'
                     where 
                         t1.id = '{1}';"""
-            target = ['id', 'name', 'unit', 'price', 'time', 'category_id', 'loss_coefficient', 'safety']
+            target = ['id', 'name', 'unit', 'price', 'time', 'category_id', 'loss_coefficient', 'lowest_count',
+                      'lowest_package', 'lowest_product', 'safety']
         else:
             sql_1 = """
                     select 
@@ -1449,7 +1451,6 @@ class ProductProductMaterialDetailId(APIView):
                         t2.price, 
                         t2.time, 
                         t1.category_id, 
-                        t2.lowest_count, 
                         t2.loss_coefficient, 
                         t3.safety 
                     from 
@@ -1464,7 +1465,7 @@ class ProductProductMaterialDetailId(APIView):
                         and t3.factory = '{0}'
                     where 
                         t1.id = '{1}';"""
-            target = ['id', 'name', 'unit', 'price', 'time', 'category_id', 'lowest_count', 'loss_coefficient', 'safety']
+            target = ['id', 'name', 'unit', 'price', 'time', 'category_id', 'loss_coefficient', 'safety']
         sql_2 = """
                 WITH RECURSIVE cte AS (
                     SELECT A.id,
@@ -1513,14 +1514,29 @@ class ProductProductMaterialDetailId(APIView):
         safety = request.data.get('safety')
 
         if Type == 'product':
-            sql_1 = "update base_products set price = {}, loss_coefficient = {} " \
-                    "where id = '{}' and factory = '{}';".format(price, loss_coefficient, Id, factory_id)
+            lowest_count = request.data.get('lowest_count')
+            # 最小起订量（采购量）
+            lowest_package = request.data.get('lowest_package')
+            # 最小生产量
+            lowest_product = request.data.get('lowest_product')
+            sql_1 = '''
+                update 
+                    base_products 
+                set 
+                    price = {}, 
+                    loss_coefficient = {}, 
+                    lowest_count = {}, 
+                    lowest_package = {}, 
+                    lowest_product = {} 
+                where 
+                    id = '{}' 
+                    and factory = '{}';'''.format(price, loss_coefficient, lowest_count, lowest_package,
+                                                  lowest_product, Id, factory_id)
             sql_2 = "update base_products_storage set safety = {} " \
                     "where product_id = '{}' and factory = '{}';".format(safety, Id, factory_id)
         else:
-            lowest_count = request.data.get('lowest_count')
-            sql_1 = "update base_materials set price = {}, lowest_count = {}, loss_coefficient = {} " \
-                    "where id = '{}' and factory = '{}';".format(price, lowest_count, loss_coefficient, Id, factory_id)
+            sql_1 = "update base_materials set price = {}, loss_coefficient = {} " \
+                    "where id = '{}' and factory = '{}';".format(price, loss_coefficient, Id, factory_id)
             sql_2 = "update base_materials_storage set safety = {} " \
                     "where material_id = '{}' and factory = '{}';".format(safety, Id, factory_id)
         try:
@@ -1660,7 +1676,7 @@ class ProductProcesslist(APIView):
         sql = """
             select 
                 id, 
-                name 
+                name
             from 
                 base_processes 
             where 
@@ -1745,19 +1761,24 @@ class ProductProcessNew(APIView):
         Time = int(time.time())
 
         sql_0 = "select count(1) from base_processes where id = '{}';"
-        sql_1 = "select count(1) from base_processes where factory = '{}' and name = '{}';"
+        sql_1 = "select id, del from base_processes where factory = '{}' and name = '{}';"
         sql_2 = "insert into base_processes(id, name, factory, time) values('{}', '{}', '{}', {});"
+        sql_3 = "update base_processes set del = '0', time = {} where id = '{}';"
 
         try:
             # 生成唯一id
             Id = create_id(sql_0)
-            # 验证名称是否重复
+            # 验证名称是否存在或者已被删除
             cur.execute(sql_1.format(factory_id, name))
-            if cur.fetchone()[0] == 0:
-                cur.execute(sql_2.format(Id, name, factory_id, Time))
-                conn.commit()
+            check_res = cur.fetchone()
+            if check_res:
+                if check_res[1] == '0':
+                    return Response({"res": 1, "errmsg": '该工序名称已存在！'}, status=status.HTTP_200_OK)
+                else:
+                    cur.execute(sql_3.format(Time, check_res[0]))
             else:
-                return Response({"res": 1, "errmsg": '该工序名称已存在！'}, status=status.HTTP_200_OK)
+                cur.execute(sql_2.format(Id, name, factory_id, Time))
+            conn.commit()
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": '服务器异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1789,7 +1810,8 @@ class ProductPbList(APIView):
         sql_1 = """
             select 
                 t1.*, 
-                t2.name
+                t2.name,
+                t2.unit
             from (
                 select
                     product_id, 
@@ -1808,7 +1830,8 @@ class ProductPbList(APIView):
             select 
                 t1.id, 
                 0 as count, 
-                t2.name
+                t2.name,
+                t2.unit
             from 
                 base_products t1 
             left join 
@@ -1821,7 +1844,7 @@ class ProductPbList(APIView):
             where 
                 t1.factory = '{}' 
                 and t3.product_id is null;"""
-        target = ['id', 'count', 'name']
+        target = ['id', 'count', 'name', 'unit']
 
         try:
             # cur.execute(sql_0.format(factory_id))
@@ -1876,7 +1899,8 @@ class ProductPbId(APIView):
                 t1.process_step, 
                 t2.name, 
                 material_ids, 
-                material_counts 
+                material_counts,
+                t1.unit_time
             from 
                 base_product_processes t1 
             left join 
@@ -1888,7 +1912,8 @@ class ProductPbId(APIView):
             where 
                 t1.product_id = '{}' 
                 and t1.factory = '{}';"""
-        target = ['id', 'process_id', 'name', 'unit', 'process_step', 'process_name', 'material_ids', 'material_counts']
+        target = ['id', 'process_id', 'name', 'unit', 'process_step', 'process_name', 'material_ids',
+                  'material_counts', 'unit_time']
 
         try:
             cur.execute(sql.format(Id, factory_id))
@@ -1915,6 +1940,7 @@ class ProductPbId(APIView):
                 item['process_step'] = i['process_step']
                 item['process_name'] = i['process_name']
                 item['material_list'] = material_list
+                item['unit_time'] = i['unit_time']
                 result['process'].append(item)
         except Exception as e:
             logger.error(e)
@@ -1930,13 +1956,15 @@ class ProductPbId(APIView):
         factory_id = request.redis_cache["factory_id"]
         process_step = request.data.get('process_step')
         materials = request.data.get('materials')
+        unit_time = request.data.get('unit_time')
 
         sql = """
             update 
                 base_product_processes 
             set 
                 material_ids = '{}', 
-                material_counts = '{}' 
+                material_counts = '{}', 
+                unit_time = {}
             where 
                 product_id = '{}' 
                 and factory = '{}' 
@@ -1944,7 +1972,7 @@ class ProductPbId(APIView):
         try:
             material_ids = '{' + ','.join(j['id'] for j in materials) + '}'
             material_counts = '{' + ','.join(str(j['count']) for j in materials) + '}'
-            cur.execute(sql.format(material_ids, material_counts, Id, factory_id, process_step))
+            cur.execute(sql.format(material_ids, material_counts, unit_time, Id, factory_id, process_step))
             conn.commit()
         except Exception as e:
             logger.error(e)
@@ -1960,6 +1988,7 @@ class ProductPbId(APIView):
         factory_id = request.redis_cache["factory_id"]
         process_id = request.data.get('process_id')
         materials = request.data.get('materials')
+        unit_time = request.data.get('unit_time')
         Time = int(time.time())
 
         sql_0 = """
@@ -1972,8 +2001,10 @@ class ProductPbId(APIView):
                 and product_id = '{}';"""
         sql_1 = """
             insert into
-                base_product_processes(factory, product_id, process_step, process_id, material_ids, material_counts, time)
-            values('{}', '{}', '{}', '{}', '{}', '{}', {})"""
+                base_product_processes(factory, product_id, process_step, process_id, material_ids, 
+                material_counts, time, unit_time)
+            values
+                ('{}', '{}', '{}', '{}', '{}', '{}', {}, {})"""
         try:
             cur.execute(sql_0.format(factory_id, Id))
             tmp = cur.fetchall()
@@ -1983,7 +2014,8 @@ class ProductPbId(APIView):
                 process_step = 0
             material_ids = '{' + ','.join(j['id'] for j in materials) + '}'
             material_counts = '{' + ','.join(str(j['count']) for j in materials) + '}'
-            cur.execute(sql_1.format(factory_id, Id, process_step+1, process_id, material_ids, material_counts, Time))
+            cur.execute(sql_1.format(factory_id, Id, process_step+1, process_id, material_ids, material_counts,
+                                     Time, unit_time))
             conn.commit()
         except Exception as e:
             logger.error(e)
@@ -2078,9 +2110,9 @@ class ProductMaterialSupplementList(APIView):
                 left join
                     base_store_picking_list t4 
                     on t1.id = t4.supplement_id 
+                    and t4.style = '1'
                 where 
                     t1.factory = '{}' 
-                    and t4.style = '1'
                 order by
                     time desc;"""
         sql_2 = """
@@ -2155,7 +2187,8 @@ class ProductMaterialSupplementDetailId(APIView):
                 end as time,
                 t1.material_ids,
                 t1.material_counts,
-                t4.order_id
+                t4.order_id,
+                t2.image
             from 
                 base_material_supplement t1
             left join
@@ -2169,11 +2202,17 @@ class ProductMaterialSupplementDetailId(APIView):
                 on t4.id = t1.product_task_id
             where 
                 t1.id = '{}';"""
-        target = ['id', 'state', 'remark', 'creator', 'phone', 'time', 'material_ids', 'material_counts', 'order_id']
+        target = ['id', 'state', 'remark', 'creator', 'phone', 'time', 'material_ids', 'material_counts', 'order_id',
+                  'image']
         sql_2 = "select name, unit from base_materials_pool where id = '{}';"
         try:
             cur.execute(sql.format(Id))
             result = dict(zip(target, cur.fetchone()))
+            # 处理头像
+            alioss = AliOss()
+            if isinstance(result['image'], memoryview):
+                result['image'] = result['image'].tobytes().decode()
+            result['image'] = alioss.joint_image(result['image'])
 
             material_names = list()
             material_units = list()
@@ -2311,7 +2350,7 @@ class ProductMaterialReturnDetailId(APIView):
                 t1.id = '{}';"""
         target = ['id', 'state', 'material_ids', 'material_counts', 'creator',
                   'receiver', 'time', 'remark', 'order_id']
-        sql_2 = "select coalesce(name, ''), phone from user_info where user_id = '{}';"
+        sql_2 = "select coalesce(name, ''), phone, image from user_info where user_id = '{}';"
         sql_3 = "select name, unit from base_materials_pool where id = '{}';"
 
         try:
@@ -2335,11 +2374,22 @@ class ProductMaterialReturnDetailId(APIView):
             tmp = cur.fetchone() or ('', '')
             result['creator_name'] = tmp[0]
             result['creator_phone'] = tmp[1]
+            image = tmp[2]
+            # 处理头像
+            alioss = AliOss()
+            if isinstance(image, memoryview):
+                image = image.tobytes().decode()
+            result['creator_image'] = alioss.joint_image(image)
             if result['receiver']:
                 cur.execute(sql_2.format(result['receiver']))
                 tmp = cur.fetchone() or ('', '')
                 result['receiver_name'] = tmp[0]
                 result['receiver_phone'] = tmp[1]
+                image = tmp[2]
+                # 处理头像
+                if isinstance(image, memoryview):
+                    image = image.tobytes().decode()
+                result['receiver_image'] = alioss.joint_image(image)
             del result['creator']
             del result['receiver']
             # 物料清单
@@ -2571,7 +2621,7 @@ class ProductMaterialSupplementCreate(APIView):
                     count = cur.fetchone()[0]
                     if count < y:
                         flag = False
-                        purchase_list.append((x, y-count))
+                        purchase_list.append((x, y, count))
                 # 获取订单id
                 cur.execute(sql_2.format(product_task_id))
                 order_id = cur.fetchone()[0]
@@ -2584,14 +2634,18 @@ class ProductMaterialSupplementCreate(APIView):
                     # 创建领料单
                     create_picking_list(cur, order_id, product_task_id, Id, factory_id, 1, seq_id)
                 else:
-                    # 创建采购单
                     purchase_counts = list()
-                    for x, y in purchase_list:
+                    for x, y, count in purchase_list:
+                        # 预分配
+                        cur.execute(sql_3.format(x, count, factory_id, Id, Time))
+                        cur.execute(sql_4.format(count, x, factory_id))
+                        # 计算采购数量
                         cur.execute(sql_5.format(x, factory_id))
                         loss = cur.fetchone()
                         loss_coefficient = loss[0] if loss else 0
-                        purchase_count = y / (1 - loss_coefficient)
+                        purchase_count = (y - count) / (1 - loss_coefficient)
                         purchase_counts.append({'id': x, 'count': purchase_count})
+                    # 创建采购单
                     create_purchase(cur, factory_id, seq_id, order_id, purchase_counts, Id)
             conn.commit()
         except Exception as e:
@@ -2632,7 +2686,7 @@ class ProductMaterialRSList(APIView):
                 base_product_task
             where 
                 id = '{}';"""
-        sql_2 = "select name from base_materials_pool where id = '{}';"""
+        sql_2 = "select name, unit from base_materials_pool where id = '{}';"""
 
         try:
             cur.execute(sql_1.format(Id))
@@ -2642,10 +2696,11 @@ class ProductMaterialRSList(APIView):
             for x, y in zip(material_list[0], material_list[1]):
                 material = dict()
                 cur.execute(sql_2.format(x))
-                name = cur.fetchone()[0]
+                name, unit = cur.fetchone()
                 material['id'] = x
                 material['count'] = y
                 material['name'] = name
+                material['unit'] = unit
                 result.append(material)
         except Exception as e:
             logger.error(e)

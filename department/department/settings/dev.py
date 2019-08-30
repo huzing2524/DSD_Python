@@ -32,7 +32,6 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
-
 # Application definition
 
 INSTALLED_APPS = [
@@ -99,21 +98,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'department.wsgi.application'
 
-
 # Database
 # https://docs.djangoproject.com/en/1.11/ref/settings/#databases
-
-DATABASES = {
-    # 'default': {
-    #     'ENGINE': 'django.db.backends.postgresql_psycopg2',
-    #     'NAME': 'dsd',
-    #     'USER': 'postgres',
-    #     'PASSWORD': '123456',
-    #     'HOST': '127.0.0.1',
-    #     'PORT': '5432'
-    # }
-}
-
 
 # Password validation
 # https://docs.djangoproject.com/en/1.11/ref/settings/#auth-password-validators
@@ -133,7 +119,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
 # Internationalization
 # https://docs.djangoproject.com/en/1.11/topics/i18n/
 
@@ -146,7 +131,6 @@ USE_I18N = True
 USE_L10N = True
 
 USE_TZ = False
-
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/1.11/howto/static-files/
@@ -201,14 +185,25 @@ REST_FRAMEWORK = {
 }
 
 # 开发环境 我的数据库配置
-POSTGRESQL_DATABASE = "dsd"
-POSTGRESQL_USER = "postgres"
-POSTGRESQL_PASSWORD = "123456"
-POSTGRESQL_HOST = "47.107.149.151"
+POSTGRESQL_DATABASE = "imd2"
+POSTGRESQL_USER = "imd2"
+POSTGRESQL_PASSWORD = "imd2"
+POSTGRESQL_HOST = "127.0.0.1"
 POSTGRESQL_PORT = "5432"
 
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql_psycopg2',
+        'NAME': POSTGRESQL_DATABASE,
+        'USER': POSTGRESQL_USER,
+        'PASSWORD': POSTGRESQL_PASSWORD,
+        'HOST': POSTGRESQL_HOST,
+        'PORT': POSTGRESQL_PORT
+    }
+}
+
 # 我的RabbitMQ配置
-RABBITMQ_HOST = '47.107.149.151'
+RABBITMQ_HOST = '127.0.0.1'
 RABBITMQ_PORT = '5672'
 
 # 图片存储路径
@@ -220,7 +215,7 @@ RABBITMQ_PORT = '5672'
 IMAGE_PATH = "test"
 
 # 我的Redis数据库配置
-REDIS_HOST = "47.107.149.151"
+REDIS_HOST = "127.0.0.1"
 REDIS_PORT = "6379"
 REDIS_DATABASE = "0"
 
@@ -231,9 +226,8 @@ CACHES = {
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_KWARGS":
-                {"max_connections": 20,  # Redis连接池的最大连接数量：20
+                {"max_connections": 40,  # Redis连接池的最大连接数量：40
                  "decode_responses": True}  # 把Redis读取出来的bytes类型转换成string类型
         }
     },
 }
-

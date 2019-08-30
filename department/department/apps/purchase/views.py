@@ -4,18 +4,23 @@ import time
 import traceback
 import json
 
+from django.utils.decorators import method_decorator
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid  # pylint: disable=redefined-builtin
+from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid, AliOss  # pylint: disable=redefined-builtin
 from constants import PrimaryKeyType
+from permissions import PurchasePermission, PurchaseApprovalPermission, purchase_decorator, purchase_approval_decorator
 from store.store_stock_utils import material_on_road
+from order.order_utils import create_order
 
 logger = logging.getLogger('django')
 
 
 class PurchaseMain(APIView):
+    permission_classes = [PurchasePermission]
+
     def get(self, request):
         timestamp = int(time.time())
         factory_id = request.redis_cache["factory_id"]
@@ -447,7 +452,7 @@ class PurchaseList(APIView):
                 temp['name'] = res[1]
                 products = ''
                 for i, val in enumerate(res[2]):
-                    products += res[3][i] + ':' + str(val) + res[4][i] + ';'
+                    products += res[3][i] + ':' + str(round(val, 2)) + res[4][i] + ';'
                 temp['products'] = products
                 temp['time'] = res[5]
                 data[state].append(temp)
@@ -464,7 +469,11 @@ class PurchaseList(APIView):
 class PurchaseDetail(APIView):
     """采购单详情"""
 
+    @method_decorator(purchase_decorator)
     def get(self, request, purchase_id):
+        if request.flag is False:
+            return Response({"res": 1, "errmsg": "你没有权限！"}, status=status.HTTP_403_FORBIDDEN)
+
         factory_id = request.redis_cache["factory_id"]
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()
@@ -475,7 +484,7 @@ class PurchaseDetail(APIView):
             return Response({"res": 1, "errmsg": "采购单id查询不存在。"}, status=status.HTTP_200_OK)
         phone = request.redis_cache["phone"]
         permission = request.redis_cache["permission"]
-        purchase_sql = """
+        purchase_sql = """        
             select
                 t1.supplier_id,
                 t1.state,
@@ -491,7 +500,14 @@ class PurchaseDetail(APIView):
                 t5.name as approver,
                 t5.phone as approver_phone,
                 t1.approval_time,
-                t1.plan_arrival_time
+                t1.plan_arrival_time,
+                t6.name as canceler,
+                t6.phone as cancceler_phone,
+                t1.cancel_time,
+                t1.cancel_remark,
+                t1.arrival_time,
+                t5.image,
+                t6.image
             from
                 base_purchases t1
             left join (select * from base_suppliers where factory = '{}') t3 on
@@ -500,6 +516,8 @@ class PurchaseDetail(APIView):
                 t1.creator = t4.user_id
             left join user_info t5 on
                 t1.approver = t5.user_id
+            left join user_info t6 on
+                t1.canceler = t6.user_id
             where
                 t1.id = '{}';
         """.format(factory_id, purchase_id)
@@ -540,6 +558,7 @@ class PurchaseDetail(APIView):
                 data["creator_id"] = res[2] or ""
                 data["creator"] = res[3] or ""
                 data['remark'] = res[4] or ''
+                data['arrival_time'] = res[19] or 0
                 data['supplier'] = {}
                 data["supplier"]['id'] = res[0] or ""
                 data['supplier']['name'] = res[5] or ''
@@ -548,12 +567,27 @@ class PurchaseDetail(APIView):
                 data['supplier']['position'] = res[8] or ''
                 data['supplier']['address'] = res[9] or ''
                 data['plan_arrival_time'] = res[14] or 0
-
+                alioss = AliOss()
                 if (res[1] != '1' and res[1] != '6') and res[1]:
                     data['approve'] = {}
                     data['approve']['name'] = res[11]
                     data['approve']['phone'] = res[12]
                     data['approve']['time'] = res[13]
+                    image = res[20]
+                    if isinstance(image, memoryview):
+                        image = image.tobytes().decode()
+                    data['approve']['image'] = alioss.joint_image(image)
+
+                if res[1] == '6':
+                    data['cancel'] = {}
+                    data['cancel']['name'] = res[15]
+                    data['cancel']['phone'] = res[16]
+                    data['cancel']['time'] = res[17]
+                    data['cancel']['remark'] = res[18]
+                    image = res[21]
+                    if isinstance(image, memoryview):
+                        image = image.tobytes().decode()
+                    data['cancel']['image'] = alioss.joint_image(image)
 
                 if "1" in permission:
                     data["flag"] = "0"
@@ -564,8 +598,8 @@ class PurchaseDetail(APIView):
             for res in products_result:
                 di = dict()
                 di["id"] = res[0] or ""
-                di["count"] = res[1] or 0
-                di["unit_price"] = res[2] or 0
+                di["count"] = round(res[1] if res[1] else 0, 2)
+                di["unit_price"] = round(res[2] if res[2] else 0, 2)
                 di["name"] = res[3] or ""
                 di["unit"] = res[4] or ""
                 di["category_name"] = res[5] or ""
@@ -582,6 +616,7 @@ class PurchaseDetail(APIView):
         finally:
             pgsql.disconnect_postgresql(connection)
 
+    @method_decorator(purchase_approval_decorator)
     def put(self, request, purchase_id):
         """修改采购状态
         1: 通过审批， 2：取消采购
@@ -591,7 +626,11 @@ class PurchaseDetail(APIView):
 
         取消采购单 -> 对应采购单取消
         """
+        if request.flag is False:
+            return Response({"res": 1, "errmsg": "你没有权限！"}, status=status.HTTP_403_FORBIDDEN)
+
         factory_id = request.redis_cache["factory_id"]
+        seq_id = request.redis_cache["seq_id"]
         user_id = request.redis_cache["user_id"]
         if not user_id:
             user_id = request.redis_cache["phone"]
@@ -649,22 +688,16 @@ class PurchaseDetail(APIView):
                 cursor.execute(check_client_sql)
                 supplier_res = cursor.fetchone()
                 if supplier_res:
-                    supplier_seq_id = supplier_res[1]
-                    supplier_factory = supplier_res[0]
-                    logger.info('seq_id %d factory %s', supplier_seq_id, supplier_factory)
-                    order_id = generate_module_uuid(PrimaryKeyType.order.value, supplier_factory, supplier_seq_id)
-                    purchase_products_sql = "select purchase_create_order('{}', '{}');".format(purchase_id, order_id)
-                    cursor.execute(purchase_products_sql)
+                    # 创建订单
+                    create_order(cursor, factory_id, seq_id, purchase_id)
                     connection.commit()
-                    create_message = {'resource': 'PyOrderState', 'type': 'PUT',
-                                      'params': {'fac': supplier_factory, 'id': order_id, 'state': '6'}}
-                    rabbitmq.send_message(json.dumps(create_message))
                 else:
                     connection.commit()
 
             elif state == '2':
-                purchase_sql = "update base_purchases set state = '6', cancel_time ={} where id = '{}' " \
-                               "".format(timestamp, purchase_id)
+                purchase_sql = "update base_purchases set state = '6', canceler = '{}', cancel_remark = '{}' " \
+                               " ,cancel_time ={} where id = '{}' ".format(user_id, remark, timestamp, purchase_id)
+
                 cursor.execute(purchase_sql)
                 connection.commit()
                 message = {'resource': 'PyPurchaseState', 'type': 'PUT',
@@ -681,6 +714,8 @@ class PurchaseDetail(APIView):
 
 
 class PurchaseCRank(APIView):
+    permission_classes = [PurchasePermission]
+
     def get(self, request):
         timestamp = int(time.time())
         factory_id = request.redis_cache["factory_id"]

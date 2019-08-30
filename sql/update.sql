@@ -181,7 +181,7 @@ CREATE TABLE if not exists base_product_task
   complete_time      integer,                    -- 完成生产的时间
   material_ids       varchar(36)[] default '{}', -- 生产单中的物料列表（单个产品）
   material_counts    float[]       default '{}', -- 生产单中的物料数量（单个产品）
-  purchase_state     varchar(1) default '0',       -- 是否创建了采购单，0：未创建， 1：已创建
+  purchase_state     varchar(1)    default '0',  -- 是否创建了采购单，0：未创建， 1：已创建
   order_id           varchar(36) not null,
   constraint fk_factory foreign key (factory) REFERENCES factorys (id),
   constraint fk_order_id foreign key (order_id) REFERENCES base_orders (id),
@@ -206,7 +206,7 @@ CREATE TABLE if not exists base_product_parent_task
   complete_time      integer,                    -- 完成生产的时间
   material_ids       varchar(36)[] default '{}', -- 生产单中的物料列表（单个产品）
   material_counts    float[]       default '{}', -- 生产单中的物料数量（单个产品）
-  purchase_state     varchar(1) default '0',       -- 是否创建了采购单，0：未创建， 1：已创建
+  purchase_state     varchar(1)    default '0',  -- 是否创建了采购单，0：未创建， 1：已创建
   order_id           varchar(36) not null,
   constraint fk_factory foreign key (factory) REFERENCES factorys (id),
   constraint fk_order_id foreign key (order_id) REFERENCES base_orders (id),
@@ -426,7 +426,7 @@ create table base_products_log
   "product_id" varchar(36) not null references base_materials_pool (id) on delete cascade on update cascade, -- 关联的物料池的id
   "type"       varchar(20),                                                                                  -- actual/pre_product/prepared/store_check
   "count"      double precision,
-  "source"     varchar(1)  not null,                                                                         -- 哪种类型的单操作的库存: 0: 入库-完工入库单, 1: 出库-发货单, 2: 库存盘点
+  "source"     varchar(1)  not null,                                                                         -- 哪种类型的单操作的库存: 0: 入库-完工入库单, 1: 出库-发货单, 2: 库存盘点, 3：生产单, 4: 订单
   "source_id"  varchar(36) not null,                                                                         -- 单号id
   "factory"    varchar(36) not null,
   "time"       integer
@@ -521,7 +521,7 @@ create table base_order_track
   order_id varchar(36) references base_orders (id), -- 订单id
   type     varchar(1) not null,                     -- 类型，1: 状态变换，2：收款
   val      float      not null,                     -- 状态变换时，为状态类型， 收款时为收款金额
-  time     integer    default extract(epoch from now())::integer
+  time     integer                 default extract(epoch from now())::integer
 );
 
 
@@ -548,3 +548,69 @@ create table base_client_products
 
 ALTER TABLE factorys
   ADD COLUMN seq_id SERIAL;
+alter table base_clients_pool add column verify varchar(1) default '1'; -- verify  添加到资源池企业需经审核 0:未审核，1:已审核
+
+------------------------------------------------------------------------------------------------------------------------
+-- version 3.5.1 update 2019.5.14
+------------------------------------------------------------------------------------------------------------------------
+alter table base_store_invoice
+  add column remark varchar(60) default ''; -- 发货单备注
+alter table base_storage_check
+  add column reason varchar(60) default ''; -- 盘点原因
+alter table base_store_temporary_purchase
+  add column reason varchar(60) default ''; -- 临时申购原因
+
+-- 仓库-多仓库总表
+create table base_multi_storage
+(
+  "id"      serial primary key,
+  "uuid"    varchar(36),
+  "name"    varchar(30) not null, -- 仓库名称
+  "factory" varchar(36) not null references factorys (id) on update cascade on delete cascade,
+  "time"    integer
+);
+
+alter table base_materials_storage
+  add column uuid varchar(36) default 'default';
+
+alter table base_products_storage
+  add column uuid varchar(36) default 'default';
+
+-- 产品表增加
+alter table base_products
+  add column lowest_count double precision default 0,     --最低采购量
+  add column lowest_package double precision default 0,   --最小包装量
+  add column lowest_product double precision default 0;   --最小生产量
+
+-- 物料表删除最低采购量
+alter table base_materials
+  drop column lowest_count;
+
+-- 产品工序表增加单位用时
+alter table base_product_processes
+  add column unit_time double precision;
+
+-- 修改good和ng的数据类型
+alter table base_product_task_processes alter column good type double precision, alter column ng type double precision;
+
+-- 增加客户的送达时间
+alter table base_clients add column deliver_days float default 0;
+alter table base_suppliers add column deliver_days float default 0;
+alter table base_supplier_materials
+  add column lowest_package float default 0,  -- 最小包装量
+  add column lowest_count float default 0;  -- 最小起订量
+
+-- 订单状态更新记录日志
+create table base_orders_stats (
+	id serial primary key,
+	order_id varchar(36) references base_orders(id),
+	state varchar(1) not null,								-- 1:创建，2: 审批，3:内部取消，4: 暂停，5：外部取消 6: 暂停恢复
+	remark varchar(60) default '',							-- 操作备注
+	operator varchar(36) references user_info(user_id),		-- 操作人
+	optime integer,											-- 操作时间
+	time integer default extract(epoch from now())::integer
+);
+
+alter table base_purchases add column canceler varchar(36) references user_info(user_id);
+alter table base_purchases add column cancel_remark varchar(60) default '';
+alter table base_purchases add column arrival_time integer default 0;

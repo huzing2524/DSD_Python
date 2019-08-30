@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import qrcode
 import datetime
 import time
 
@@ -37,16 +36,6 @@ def save_message_record(cursor, connection, type1, type2, factory_id, phone, tim
         cursor.execute(sql % (uuid, phone, title, content, type1, type2, item_id, re, timestamp))
     connection.commit()
     # todo 发送消息......
-
-
-def create_qrcode(content):
-    """生成二维码"""
-    qr = qrcode.QRCode(version=2, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=1)
-    qr.add_data("这是一段文字。https://www.baidu.com")
-    qr.make(fit=True)
-    img = qr.make_image()
-    img.save("saowo1.png")
-    return img
 
 
 def year_timestamp(year):

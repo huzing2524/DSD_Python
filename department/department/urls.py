@@ -13,19 +13,19 @@ Including another URLconf
     1. Import the include() function: from django.conf.urls import url, include
     2. Add a URL to urlpatterns:  url(r'^blog/', include('blog.urls'))
 """
-from django.conf.urls import url, include
+from django.urls import path, include
 from django.contrib import admin
 
 urlpatterns = [
-    url(r'^admin/', admin.site.urls),
-    url(r"", include("analysis.urls")),
-    url(r"^api/v3/", include("finance.urls")),
-    url(r"^api/v3/", include("material.urls")),
-    url(r"^api/v3/", include("purchase.urls")),
-    url(r"^api/v3/", include("order.urls")),
-    url(r"^api/v3/", include("predict.urls")),
-    url(r"^api/v3/", include("products.urls")),
-    url(r"^api/v3/", include("rights.urls")),
-    url(r"^api/v3/", include("store.urls")),
-    url(r"api/v3/", include("industry_plus.urls")),
+    # path('admin/', admin.site.urls),
+    path("", include("analysis.urls")),
+    path("api/v3/", include("finance.urls")),
+    path("api/v3/", include("material.urls")),
+    path("api/v3/", include("purchase.urls")),
+    path("api/v3/", include("order.urls")),
+    path("api/v3/", include("predict.urls")),
+    path("api/v3/", include("products.urls")),
+    path("api/v3/", include("rights.urls")),
+    path("api/v3/", include("store.urls")),
+    path("api/v3/", include("industry_plus.urls")),
 ]

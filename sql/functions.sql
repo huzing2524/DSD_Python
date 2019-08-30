@@ -118,3 +118,36 @@ BEGIN
 END;
 $BODY$ LANGUAGE plpgsql;
 select import_clients_pool();
+
+
+-- update 2019.05.17 version 3.5.1
+-- 将订单状态导入到新的表当中
+CREATE OR REPLACE FUNCTION import_order_stats()
+  RETURNS void AS
+$BODY$
+DECLARE
+    r RECORD;
+BEGIN
+		FOR r IN
+			select id, state, order_type, create_time, creator, approval_time, pause_time, cancel_time, remark from base_orders
+		loop
+			-- create action
+			EXECUTE format('
+		    insert into base_orders_stats (order_id, state, remark, operator, optime) values (%L, %L, %L,%L,%L) ;
+		     ', r.id, '1', r.remark, r.creator, r.create_time);
+		    if r.approval_time > 0 then
+		        EXECUTE format('insert into base_orders_stats (order_id, state, remark, operator, optime) values (%L, %L, %L,%L,%L) ;
+		     ', r.id, '2', '', r.creator, r.approval_time);
+		    end if;
+		    if r.cancel_time > 0 then
+		    	EXECUTE format('insert into base_orders_stats (order_id, state, remark, operator, optime) values (%L, %L, %L,%L,%L) ;
+		     ', r.id, '3', '', r.creator, r.cancel_time);
+		     end if;
+		     if r.pause_time > 0 then
+		    	EXECUTE format('insert into base_orders_stats (order_id, state, remark, operator, optime) values (%L, %L, %L,%L,%L) ;
+		     ', r.id, '4', '', r.creator, r.pause_time);
+		     end if;
+		end LOOP;
+END;
+$BODY$ LANGUAGE plpgsql;
+select import_order_stats();

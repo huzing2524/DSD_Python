@@ -12,14 +12,21 @@ ENV PG_DATABASE="db_dsd" \
     REDIS_DATABASE="0" \
     SETTING_NAME="prod"
 
-RUN mkdir -p /app
+RUN mkdir -p /dsdpy-app
 
-COPY . /app
+RUN apt-get update && \
+    apt-get install -y \
+	supervisor &&\
+	rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+COPY supervisor-app.conf /etc/supervisor/conf.d/
 
-RUN pip install -r requirements.txt
+COPY . /dsdpy-app
+
+WORKDIR /dsdpy-app
+
+RUN pip3 install -r requirements.txt
 
 EXPOSE 8001
 
-CMD ["python3", "./department/manage.py", "runserver", "0.0.0.0:8001"]
+CMD ["supervisord", "-n"]

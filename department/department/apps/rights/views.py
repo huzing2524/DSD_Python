@@ -12,15 +12,32 @@ from django_redis import get_redis_connection
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db import connection
 
-from apps_utils import UtilsPostgresql, AliOss, UtilsRabbitmq
-from constants import RIGHTS_DICT, FACTORY_HBYL, HBYL_RIGHTS
-from permissions import ManagementPermission, SuperAdminPermission
+from apps_utils import AliOss, UtilsRabbitmq
+from constants import RIGHTS_DICT, FACTORY_HBYL, FACTORY_WHBY, HBYL_RIGHTS, WHBY_RIGHTS
+from permissions import ManagementPermission
 
 logger = logging.getLogger('django')
 
-
 # 权限管理---------------------------------------------------------------------------------------------------------------
+
+"""
+document: Connections and cursors 官方文档用法
+
+https://docs.djangoproject.com/zh-hans/2.2/topics/db/sql/#connections-and-cursors
+
+with connection.cursor() as c:
+    c.execute(...)
+或者
+c = connection.cursor()
+try:
+    c.execute(...)
+finally:
+    c.close()
+"""
+
+
 class GenerateToken(APIView):
     """generate/token"""
     permission_classes = []
@@ -47,8 +64,7 @@ class RightsInfo(APIView):
         factory_id = request.redis_cache["factory_id"]
 
         alioss = AliOss()
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         sql = """
         select 
@@ -89,7 +105,7 @@ class RightsInfo(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class RightsList(APIView):
@@ -97,13 +113,9 @@ class RightsList(APIView):
     permission_classes = [ManagementPermission]
 
     def get(self, request):
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
         alioss = AliOss()
 
         sql = """
@@ -157,7 +169,7 @@ class RightsList(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class RightsNew(APIView):
@@ -166,41 +178,47 @@ class RightsNew(APIView):
 
     def post(self, request):
         new_phone = request.data.get("phone")  # 新增手机号
-        rights = request.data.get("rights")  # 权限代号列表 ['1','2', '3']
+        rights = request.data.get("rights", [])  # 权限代号列表 ['1','2', '3']
         if not all([new_phone, rights]):
-            return Response({"res": 1, "errmsg": "缺少参数！"},
-                            status=status.HTTP_200_OK)
+            return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
 
+        rights = list(set(rights))  # 去重
         if not re.match("^(13[0-9]|14[579]|15[0-3,5-9]|16[6]|17[0135678]|18[0-9]|19[89])\\d{8}$", new_phone):
             return Response({"res": 1, "errmsg": "电话号码格式错误"}, status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
+
+        cursor.execute("select count(1) from user_info where phone = '{}';".format(new_phone))
+        new_phone_check = cursor.fetchone()[0]
+        if new_phone_check <= 0:
+            return Response({"res": 1, "errmsg": "该号码未注册，无法添加！"}, status=status.HTTP_200_OK)
 
         cursor.execute("select factory from factory_users where phone = '%s';" % new_phone)
         factory = cursor.fetchone()
         # print(factory)
         if factory:
             if factory[0] == factory_id:
-                return Response({"res": 1, "errmsg": "电话号码已存在于当前工厂！"},
-                                status=status.HTTP_200_OK)
+                return Response({"res": 1, "errmsg": "该号码已存在于当前工厂！"}, status=status.HTTP_200_OK)
             else:
-                return Response({"res": 1, "errmsg": "电话号码已存在于其它工厂！"},
-                                status=status.HTTP_200_OK)
+                return Response({"res": 1, "errmsg": "该号码已存在于其它工厂！"}, status=status.HTTP_200_OK)
+
+        cursor.execute("select user_id from user_info where phone = '{}';".format(new_phone))
+        new_user_id = cursor.fetchone()[0]
+
         try:
-            rights = list(set(rights))  # 去重
             cursor.execute(
                 "insert into factory_users (phone, rights, factory, time) values ('%s', '{%s}', '%s', %d)" % (
-                    new_phone, ','.join(rights), factory_id, int(time.time())))
+                    new_user_id, ','.join(rights), factory_id, int(time.time())))
+
+            # 删除新增人员之前的权限(之前加入体验版然后退出，后来加入某个工厂，缓存没有删除，会出错)
+            redis_conn = get_redis_connection("default")
+            redis_conn.hdel(new_phone, "permission", "factory_id")
 
             # 发送消息通知
             message = {'resource': 'PyRightsNew', 'type': 'POST',
-                       'params': {'Fac': factory_id, 'Phone': new_phone, "User": phone}}
+                       'params': {'Fac': factory_id, 'Phone': new_phone, "User": new_user_id}}
             # print("message=", message)
             rabbitmq = UtilsRabbitmq()
             rabbitmq.send_message(json.dumps(message))
@@ -212,7 +230,7 @@ class RightsNew(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class RightsModify(APIView):
@@ -223,48 +241,45 @@ class RightsModify(APIView):
         new_phone = request.data.get("phone")  # 手机号
         new_rights = request.data.get("rights", [])  # 权限代号列表 ['1','2', '3']
         if not all([new_phone, new_rights]):
-            return Response({"res": 1, "errmsg": "lack of params phone or rights! 缺少参数电话号码或权限列表！"},
-                            status=status.HTTP_200_OK)
+            return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        if phone == new_phone:
+        cursor = connection.cursor()
+
+        cursor.execute("select user_id from user_info where phone = '{}';".format(new_phone))
+        new_user_id = cursor.fetchone()[0]
+
+        if user_id == new_user_id:
             return Response({"res": 1, "errmsg": "不能修改自身权限！"}, status=status.HTTP_200_OK)
         # 修改权限不能添加超级管理员的权限
         if "1" in new_rights:
             new_rights.remove("1")
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
         new_rights = list(set(new_rights))  # 去重
+
         try:
-            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_phone)
+            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_user_id)
             phone_check = cursor.fetchone()[0]
             if phone_check <= 0:
                 return Response({"res": 1, "errmsg": "该号码的用户不存在！"}, status=status.HTTP_200_OK)
 
             cursor.execute("update factory_users set rights = '{%s}' where phone = '%s' and factory = '%s';" % (
-                ','.join(new_rights), new_phone, factory_id))
+                ','.join(new_rights), new_user_id, factory_id))
 
             connection.commit()
 
             # new_phone用户的权限发生变化，删除Redis的缓存，在中间件中重新读取数据库获取权限
             redis_conn = get_redis_connection("default")
-            pl = redis_conn.pipeline()
-            pl.hdel(new_phone, "permission", permission)
-            pl.hdel(new_phone, "factory_id", factory_id)
-            pl.execute()
+            redis_conn.hdel(new_phone, "permission", "factory_id")
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class RightsDelete(APIView):
@@ -276,47 +291,43 @@ class RightsDelete(APIView):
         if not new_phone:
             return Response({"res": 1, "errmsg": "缺少参数，无法删除！"}, status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
 
-        if phone == new_phone:
+        cursor = connection.cursor()
+
+        cursor.execute("select user_id from user_info where phone = '{}';".format(new_phone))
+        new_user_id = cursor.fetchone()[0]
+
+        if user_id == new_user_id:
             return Response({"res": 1, "errmsg": "不能删除自身权限！"}, status=status.HTTP_200_OK)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
         try:
-            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_phone)
+            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_user_id)
             phone_check = cursor.fetchone()[0]
             if phone_check <= 0:
                 return Response({"res": "1", "errmsg": "此号码不存在！"}, status=status.HTTP_200_OK)
 
             cursor.execute("select count(*) from factory_users where phone = '%s' and factory = '%s' and "
-                           "'1' = ANY(rights);" % (new_phone, factory_id))
+                           "'1' = ANY(rights);" % (new_user_id, factory_id))
             result = cursor.fetchone()[0]
             if result >= 1:
-                return Response({"res": 1, "errmsg": "该电话号码是超级管理员，不能删除权限！"}, status=status.HTTP_200_OK)
+                return Response({"res": 1, "errmsg": "该号码是超级管理员，不能删除权限！"}, status=status.HTTP_200_OK)
 
-            cursor.execute("delete from factory_users where phone = '%s' and factory = '%s';" % (new_phone, factory_id))
-            cursor.execute(
-                "delete from user_tp_apps where phone = '%s' and factory_id = '%s';" % (new_phone, factory_id))
+            cursor.execute("delete from factory_users where phone = '%s' and factory = '%s';" %
+                           (new_user_id, factory_id))
             connection.commit()
 
             # new_phone用户被删除，删除Redis的缓存
             redis_conn = get_redis_connection("default")
-            pl = redis_conn.pipeline()
-            pl.hdel(new_phone, "permission", permission)
-            pl.hdel(new_phone, "factory_id", factory_id)
-            pl.execute()
+            redis_conn.hdel(new_phone, "permission", "factory_id")
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class RightsOrg(APIView):
@@ -327,4 +338,6 @@ class RightsOrg(APIView):
         factory_id = request.redis_cache["factory_id"]
         if factory_id == FACTORY_HBYL:
             return Response({'res': 0, 'data': {'label': '治疗仪管理', 'rights': HBYL_RIGHTS}}, status=status.HTTP_200_OK)
+        if factory_id == FACTORY_WHBY:
+            return Response({'res': 0, 'data': {'label': '数据管理', 'rights': WHBY_RIGHTS}}, status=status.HTTP_200_OK)
         return Response({'res': 1, 'data': {}}, status=status.HTTP_200_OK)

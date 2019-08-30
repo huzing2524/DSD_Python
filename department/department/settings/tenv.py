@@ -88,11 +88,22 @@ WSGI_APPLICATION = 'department.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/1.11/ref/settings/#databases
 
+# 测试环境 数据库配置
+POSTGRESQL_DATABASE = os.environ.get("PG_DATABASE") or "imd2"
+POSTGRESQL_USER = os.environ.get("PG_USER") or "imd2"
+POSTGRESQL_PASSWORD = os.environ.get("PG_PASSWORD") or "imd2"
+POSTGRESQL_HOST = os.environ.get("PG_HOST") or "127.0.0.1"
+POSTGRESQL_PORT = os.environ.get("PG_PORT") or "5432"
+
 DATABASES = {
-    # 'default': {
-    #     'ENGINE': 'django.db.backends.sqlite3',
-    #     'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
-    # }
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql_psycopg2',
+        'NAME': POSTGRESQL_DATABASE,
+        'USER': POSTGRESQL_USER,
+        'PASSWORD': POSTGRESQL_PASSWORD,
+        'HOST': POSTGRESQL_HOST,
+        'PORT': POSTGRESQL_PORT
+    }
 }
 
 # Password validation
@@ -169,7 +180,7 @@ LOGGING = {
         'django': {
             'handlers': ['console', 'file'],
             'propagate': True,
-            'level': 'DEBUG',
+            'level': 'INFO',
         },
     }
 }
@@ -179,15 +190,8 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ()
 }
 
-# 测试环境 数据库配置
-POSTGRESQL_DATABASE = os.environ.get("PG_DATABASE") or "db_dsdapp"
-POSTGRESQL_USER = os.environ.get("PG_USER") or "dsd"
-POSTGRESQL_PASSWORD = os.environ.get("PG_PASSWORD") or "dsdPassword"
-POSTGRESQL_HOST = os.environ.get("PG_HOST") or "120.77.221.233"
-POSTGRESQL_PORT = os.environ.get("PG_PORT") or "5432"
-
 # RabbitMQ配置
-RABBITMQ_HOST = os.environ.get("RM_HOST") or '47.107.149.151'
+RABBITMQ_HOST = os.environ.get("RM_HOST") or '127.0.0.1'
 RABBITMQ_PORT = os.environ.get("RM_PORT") or '5672'
 
 # 图片存储路径
@@ -199,7 +203,7 @@ RABBITMQ_PORT = os.environ.get("RM_PORT") or '5672'
 IMAGE_PATH = "tenv"
 
 # Redis数据库配置
-REDIS_HOST = os.environ.get("REDIS_HOST") or "47.107.149.151"
+REDIS_HOST = os.environ.get("REDIS_HOST") or "127.0.0.1"
 REDIS_PORT = os.environ.get("REDIS_PORT") or "6379"
 REDIS_DATABASE = os.environ.get("REDIS_DATABASE") or "0"
 
@@ -210,7 +214,7 @@ CACHES = {
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_KWARGS":
-                {"max_connections": 20,  # Redis连接池的最大连接数量：20
+                {"max_connections": 40,  # Redis连接池的最大连接数量：40
                  "decode_responses": True}  # 把Redis读取出来的bytes类型转换成string类型
         }
     },

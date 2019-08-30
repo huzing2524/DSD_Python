@@ -56,6 +56,26 @@ def create_product_task(**kwargs):
             material_counts = '{}'
         where 
             id = '{}';"""
+    sql_4 = """
+        insert into
+            base_products_log(
+            product_id, 
+            type, 
+            count, 
+            source, 
+            source_id, 
+            factory, 
+            time)
+        values('{}', 'pre_product', {}, '3', '{}', '{}', {});
+        """
+    sql_5 = """
+        update 
+            base_products_storage
+        set 
+            pre_product = pre_product + {} 
+        where 
+            product_id = '{}' 
+            and factory = '{}';"""
     try:
         Id = generate_module_uuid('02', kwargs['factory_id'], kwargs['seq_id'])
         cur.execute(sql_1.format(Id, kwargs['factory_id'], kwargs['product_id'], kwargs['target_count'],
@@ -76,6 +96,9 @@ def create_product_task(**kwargs):
         material_ids = '{' + ','.join(material_ids) + '}'
         material_counts = '{' + ','.join(str(i) for i in material_counts) + '}'
         cur.execute(sql_3.format(material_ids, material_counts, Id))
+        # 增加生产中的产品库存
+        cur.execute(sql_4.format(kwargs['product_id'], kwargs['target_count'], Id, kwargs['factory_id'], Time))
+        cur.execute(sql_5.format(kwargs['target_count'], kwargs['product_id'], kwargs['factory_id']))
         conn.commit()
 
     except Exception as e:
@@ -321,7 +344,7 @@ def material_mrp_calculation(product_task_id, seq_id):
                 cur.execute(sql_4.format(x, tmp[0]))
                 loss = cur.fetchone()
                 loss_coefficient = loss[0] if loss else 0
-                purchase_count = (tmp[3] - number) / (1 - loss_coefficient)
+                purchase_count = tmp[3] * y / (1 - loss_coefficient)
                 purchase_counts.append({'id': x, 'count': purchase_count})
             # 生成采购单
             from purchase.purchase_utils import create_purchase
@@ -335,98 +358,3 @@ def material_mrp_calculation(product_task_id, seq_id):
 
     postgresql.disconnect_postgresql(conn)
     return {'res': 0}
-
-
-def get_message_data_product(cur, product_task_id, user_id, state):
-    """ 推送时与产品有关的数据 """
-
-    sql_0 = """
-        select 
-            t2.name,
-            t2.unit,
-            t1.target_count
-        from 
-            base_product_task t1
-        left join 
-            base_materials_pool t2
-            on t1.id = t2.id
-        where 
-            t1.id = '{}';"""
-    sql_1 = "select coalesce(name, ''), image from user_info where user_id = '{}';"
-
-    cur.execute(sql_0.format(product_task_id))
-    product_name, unit, target_count = cur.fetchone()
-    # 操作者姓名和头像
-    alioss = AliOss()
-    if user_id:
-        cur.execute(sql_1.format(user_id))
-        operator, image = cur.fetchone() or ('', '')
-        if isinstance(image, memoryview):
-            image = image.tobytes().decode()
-        image = alioss.joint_image(image)
-    else:
-        operator = '小D'
-        image = alioss.joint_image('')
-
-    message = {'id': product_task_id, 'product_name': product_name, 'product_target': '{}{}'.format(target_count, unit),
-               'operator': operator, 'image': image, 'state': state}
-    return message
-
-
-def get_message_data_material(cur, product_task_id, user_id, state):
-    """ 推送时与产品物料有关的数据 """
-    sql_1 = """
-        select 
-            t2.name, 
-            material_ids, 
-            material_counts
-        from 
-            base_product_task t1 
-        left join 
-            base_materials_pool t2 
-            on t1.id = t2.id
-        where 
-            id = '{}';"""
-    sql_2 = "select coalesce(name, ''), image from user_info where user_id = '{}';"
-    sql_3 = """
-            select 
-                t1.name, 
-                unit, 
-                t2.name 
-            from 
-                base_materials_pool t1 
-            left join 
-                base_material_category_pool t2 on 
-                t1.category_id = t2.id
-            where t1.id = '{}';"""
-    # 推送-产品名称
-    cur.execute(sql_1.format(product_task_id))
-    product_name, material_ids, material_counts = cur.fetchone()[0]
-    # 操作者姓名和头像
-    alioss = AliOss()
-    if user_id:
-        cur.execute(sql_2.format(user_id))
-        operator, image = cur.fetchone() or ('', '')
-        if isinstance(image, memoryview):
-            image = image.tobytes().decode()
-        image = alioss.joint_image(image)
-    else:
-        operator = '小D'
-        image = alioss.joint_image('')
-    # 推送-物料清单
-    material_names = list()
-    material_units = list()
-    material_categories = list()
-    for j in material_ids:
-        cur.execute(sql_3.format(j))
-        tmp = cur.fetchone()
-        material_names.append(tmp[0])
-        material_units.append(tmp[1])
-        material_categories.append(tmp[2])
-    materials = ';'.join('{}:{} {}{}'.format(x, y, z, t) for x, y, z, t in zip(material_categories,
-                                                                               material_names,
-                                                                               material_counts,
-                                                                               material_units))
-    message = {'id': product_task_id, 'product_name': product_name, 'materials': materials,
-               'operator': operator, 'image': image, 'state': state}
-    return message

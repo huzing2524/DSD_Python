@@ -4,8 +4,9 @@
 # @File   : store_utils.py
 import json
 import time
+from django.db import connection
 
-from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid
+from apps_utils import UtilsRabbitmq, generate_module_uuid
 from constants import PrimaryKeyType
 
 
@@ -130,8 +131,7 @@ def update_invoice(invoice_id, state, user_id, phone, factory_id, seq_id):
     :param seq_id: 工厂序号 seq_id = request.redis_cache["seq_id"]
     :return: None
     """
-    pgsql = UtilsPostgresql()
-    connection, cursor = pgsql.connect_postgresql()
+    cursor = connection.cursor()
 
     if state == "1":
         products_list, counts_list = [], []
@@ -284,8 +284,7 @@ def update_picking_list(picking_id, state, user_id, factory_id, action):
     :return:
     """
     rabbitmq = UtilsRabbitmq()
-    pgsql = UtilsPostgresql()
-    connection, cursor = pgsql.connect_postgresql()
+    cursor = connection.cursor()
 
     if state not in ["1", "2"]:
         return "状态代号错误！"
@@ -371,6 +370,12 @@ def update_picking_list(picking_id, state, user_id, factory_id, action):
                 connection.commit()
                 return {"res": 0}
             elif action == "2":  # 入库操作, 更新领料单状态
+                cursor.execute("select state from base_store_picking_list where factory = '%s' and id = '%s';" %
+                               (factory_id, picking_id))
+                old_state = cursor.fetchone()[0]
+                if old_state == "2":
+                    return {"res": 1, "errmsg": "已领料，不能重复操作！"}
+
                 cursor.execute("update base_store_picking_list set state = '2', receive_person = '%s', "
                                "picking_time = %d where id = '%s';" % (user_id, timestamp, picking_id))
 
@@ -402,8 +407,6 @@ def update_picking_list(picking_id, state, user_id, factory_id, action):
                 return "操作类型代号错误！"
     except Exception:
         raise Exception
-    finally:
-        pgsql.disconnect_postgresql(connection)
 
 
 def update_completed_storage(completed_id, state, user_id, factory_id, seq_id):
@@ -416,8 +419,7 @@ def update_completed_storage(completed_id, state, user_id, factory_id, seq_id):
     :param seq_id: 工厂序号 seq_id = request.redis_cache["seq_id"]
     :return: None
     """
-    pgsql = UtilsPostgresql()
-    connection, cursor = pgsql.connect_postgresql()
+    cursor = connection.cursor()
 
     if state != "1":
         return "完工入库单状态错误！"
@@ -447,7 +449,7 @@ def update_completed_storage(completed_id, state, user_id, factory_id, seq_id):
     """ % (timestamp, user_id, completed_id)
     cursor.execute(update_sql)
 
-    # 找多个生产任务单的产品id，数量(只找已完工的生产单, 拆单的生产单完工数量为0, 会多出来log记录)
+    # 找对应的一个生产任务单的产品id，数量(只找已完工的生产单, 拆单的生产单完工数量为0, 会多出来log记录)
     task_sql = """
     select
       t2.product_id, coalesce(t2.complete_count, 0) as count
@@ -461,7 +463,7 @@ def update_completed_storage(completed_id, state, user_id, factory_id, seq_id):
           factory = '%s' and id = '%s'
       ) t1
     left join (select * from base_product_task where state = '3') t2 on
-      t1.order_id = t2.order_id;
+      t1.product_task_id = t2.id;
     """ % (factory_id, completed_id)
     cursor.execute(task_sql)
     result = cursor.fetchall()
@@ -495,8 +497,30 @@ def update_completed_storage(completed_id, state, user_id, factory_id, seq_id):
         cursor.execute(log_sql_2 % (res[0], -res[1], completed_id, factory_id, timestamp))
         cursor.execute(storage_sql % (res[1], res[1], factory_id, res[0]))
 
-    # 生成发货单
-    create_invoice(cursor, order_id, completed_id, factory_id, seq_id)
+    search_sql = """
+    select
+      t2.state
+    from
+      (
+        select 
+          *
+        from 
+          base_store_completed_storage
+        where 
+          factory = '%s' and id = '%s'
+      ) t1
+    left join base_product_task t2 on
+      t1.order_id = t2.order_id;
+    """
+    check_status = list()
+    cursor.execute(search_sql % (factory_id, completed_id))
+    search_result = cursor.fetchall()
+    for search in search_result:
+        check_status.append(search[0])
+
+    if "0" not in check_status and "1" not in check_status and "2" not in check_status:
+        # 生成发货单-如果有多个生产任务单，其中某个生产单还未完成，不能生成发货单
+        create_invoice(cursor, order_id, completed_id, factory_id, seq_id)
 
     connection.commit()
 
@@ -510,8 +534,7 @@ def update_purchase_warehousing(warehousing_id, state, phone, factory_id):
     :param factory_id: request.redis_cache["factory_id"]
     :return: None
     """
-    pgsql = UtilsPostgresql()
-    connection, cursor = pgsql.connect_postgresql()
+    cursor = connection.cursor()
 
     if state != "1":
         return "采购入库单状态错误！"

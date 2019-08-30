@@ -6,6 +6,8 @@ BG_QUEUE_NAME = "DSD-ERL-Backend"  # RabbitMQ routing_key
 # 海滨医疗factory_id
 FACTORY_HBYL = 'hbyl'
 HBYL_RIGHTS = '10'
+FACTORY_WHBY = 'whby'
+WHBY_RIGHTS = '11'
 RIGHTS_LIST = [
     {"key": "1", "value": "超级管理员"},
     {"key": "2", "value": "高级管理员"},
@@ -82,6 +84,12 @@ class PrimaryKeyType(Enum):
 
 
 @unique
+class OrderType(Enum):
+    """1: 自建订单, 2: 推送订单"""
+    self = '1'
+    push = '2'
+
+@unique
 class OrderTrackType(Enum):
     """1: 创建订单, 2: 生产, 3: 收款, 4: 交货, 5: 完成"""
 
@@ -90,6 +98,17 @@ class OrderTrackType(Enum):
     money = "3"
     deliver = "4"
     finish = "5"
+
+
+@unique
+class OrderStatsState(Enum):
+    """1:创建，2: 审批，3:内部取消，4: 暂停，5：外部取消, 6: 暂停恢复"""
+    create = "1"
+    approve = "2"
+    cancel_inside = "3"
+    pause = "4"
+    cancel_outside = "5",
+    resume = '6'
 
 
 @unique

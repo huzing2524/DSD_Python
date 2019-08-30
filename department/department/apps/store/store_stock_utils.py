@@ -15,7 +15,7 @@ def product_prepare_stock(cursor, factory_id, product_ids, counts, source_type, 
     :param factory_id:
     :param product_ids: 产品id数组，
     :param counts: [1,2,3] 对应产品数量
-    :param source_type: 0: 入库-完工入库单, 1: 出库-发货单, 2: 库存盘点， 3:订单
+    :param source_type: 0: 入库-完工入库单, 1: 出库-发货单, 2: 库存盘点， 4:订单
     :param source_id: 对应类型id
     :return:
     """

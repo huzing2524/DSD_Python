@@ -2,6 +2,7 @@
 import logging
 import json
 import traceback
+import time
 
 import apps_utils
 
@@ -34,7 +35,13 @@ def update_purchase_state(cursor, factory_id, order_id, state):
     cursor.execute(purchase_sql)
     purchase_id = cursor.fetchall()[0][0]
     if purchase_id:
-        cursor.execute("update base_purchases set state = '{}' where id = '{}';".format(state, purchase_id))
+        arrival_time = ''
+        if state == '5':
+            arrival_time = ", arrival_time = {}".format(int(time.time()))
+
+        update_sql = "update base_purchases set state = '{}' {} where id = '{}'".format(state, arrival_time,
+                                                                                        purchase_id)
+        cursor.execute(update_sql)
         notice_state_dict = {
             '3': '2',
             '4': '3',
@@ -86,7 +93,9 @@ def create_purchase(cursor, factory_id, seq_id, order_id, materials, product_tas
                 select
                     supplier_id,
                     array_agg( material_id ) as material_id,
-                    array_agg( unit_price ) as price
+                    array_agg( unit_price ) as price,
+                    array_agg(lowest_package) as lowest_package,
+                    array_agg(lowest_count) as lowest_count
                 from
                     base_supplier_materials
                 where
@@ -133,3 +142,17 @@ def create_purchase(cursor, factory_id, seq_id, order_id, materials, product_tas
     except Exception as e:
         traceback.print_exc()
         logger.error(e)
+
+
+# 自动匹配一个供应商
+def choose_one_supplier(suppliers, materials):
+    if len(suppliers) == 1:
+        return suppliers[0]
+    for supplier in suppliers:
+        for index, val in enumerate(supplier[1]):
+            purchase_count = 0
+            price = supplier[2][index]
+            package = supplier[3][index]
+            count = supplier[4][index]
+
+        pass

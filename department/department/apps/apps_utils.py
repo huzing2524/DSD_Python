@@ -2,18 +2,18 @@
 import base64
 import oss2
 import pika
-import qrcode
 import shortuuid
 from itertools import islice
 
-from constants import BG_QUEUE_NAME, REDIS_CACHE
-from psycopg2.pool import AbstractConnectionPool
+from django.db import connections
 
 import random
 from django.conf import settings
 from django_redis import get_redis_connection
 import datetime
 import time
+
+from constants import BG_QUEUE_NAME
 
 
 def generate_module_uuid(module_type, factory_id, seq_id):
@@ -50,22 +50,20 @@ def generate_uuid():
     return u18
 
 
-class UtilsPostgresql(AbstractConnectionPool):
+class UtilsPostgresql(object):
     """Postgresql数据库连接池"""
 
-    def __init__(self):
-        super().__init__(minconn=5, maxconn=30, database=settings.POSTGRESQL_DATABASE, user=settings.POSTGRESQL_USER,
-                         password=settings.POSTGRESQL_PASSWORD, host=settings.POSTGRESQL_HOST,
-                         port=settings.POSTGRESQL_PORT)
-
     def connect_postgresql(self):
-        connection = AbstractConnectionPool._getconn(self)
-        cursor = connection.cursor()
+        # connection = AbstractConnectionPool._getconn(self)
+        # cursor = connection.cursor()
         # print(connection)
-        return connection, cursor
+        db_conn = connections['default']
+        cursor = db_conn.cursor()
+        return db_conn, cursor
 
     def disconnect_postgresql(self, connection):
-        AbstractConnectionPool._putconn(self, connection)
+        # AbstractConnectionPool._putconn(self, connection)
+        pass
 
 
 class UtilsRabbitmq(object):
@@ -237,14 +235,3 @@ def year_timestamp(year):
     start_timestamp = int(time.mktime(start.timetuple()))
     end_timestamp = int(time.mktime(end.timetuple()))
     return start_timestamp, end_timestamp
-
-
-def create_qrcode(content):
-    """生成二维码"""
-    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=1)
-    qr.add_data(content)
-    qr.make(fit=True)
-    img = qr.make_image()  # <class 'qrcode.image.pil.PilImage'>
-    # img.save("1.jpg")
-    # todo PilImage类型转换为bytes或者string才能上传到阿里云
-    return img

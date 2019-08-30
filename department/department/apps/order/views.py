@@ -8,8 +8,6 @@ from django.utils.decorators import method_decorator
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from constants import OrderTrackType
 from apps_utils import UtilsPostgresql, generate_uuid, UtilsRabbitmq, AliOss, generate_module_uuid, today_timestamp
 from permissions import OrderPermission, order_decorator, order_approval_decorator
 
@@ -17,7 +15,7 @@ from purchase.purchase_utils import update_purchase_state
 from store.store_utils import update_invoice, create_invoice
 from store.store_stock_utils import product_prepare_stock
 from products.products_utils import create_product_task
-from constants import PrimaryKeyType
+from constants import PrimaryKeyType, OrderStatsState, OrderTrackType, OrderType
 
 logger = logging.getLogger('django')
 
@@ -620,7 +618,7 @@ class OrderList(APIView):
                 products = ''
                 if res[2]:
                     for i, val in enumerate(res[2]):
-                        products += res[3][i] + ':' + str(val) + res[4][i] + ';'
+                        products += res[3][i] + ':' + str(round(val, 2)) + res[4][i] + ';'
                 products = products.rstrip(",")
                 temp['products'] = products
                 temp['time'] = res[6] or 0
@@ -670,13 +668,7 @@ class OrderDetail(APIView):
             coalesce(t3.position, t6.position) as position,
             coalesce(t3.region || t3.address, t6.region || t6.address) as address,
             t1.create_time,
-            t1.approval_time,
-            t1.deliver_time,
-            t1.actual_arrival_time,
-            t1.cancel_time,
-            t1.pause_time,
-            t5.name as approver,
-            t5.phone as approver_phone
+            t1.order_type
         from 
             base_orders t1
         left join (select * from base_clients where factory = '{}') t3 on 
@@ -699,26 +691,54 @@ class OrderDetail(APIView):
         from
             (
             select
-                product_id,
-                product_count,
-                unit_price
+            t1.product_id,
+            t1.product_count,
+            t1.unit_price,
+            coalesce(t2.lowest_count,0),
+            coalesce(t2.lowest_package,0)
+        from
+            base_order_products t1
+        left join (
+            select
+                *
             from
-                base_order_products
+                base_products
             where
-                order_id = '{0}' ) t1
+                factory = '{}' ) t2 on
+            t1.product_id = t2.id
+        where
+            t1.order_id = '{}') t1
         left join base_materials_pool  t2 on
             t1.product_id = t2.id
         left join base_material_category_pool t3 on
-            t2.category_id = t3.id
-        """.format(order_id)
+            t2.category_id = t3.id;
+        """.format(factory_id, order_id)
+
+        stats_sql = '''
+            select
+                t1.state,
+                t1.remark,
+                t1.optime as time,
+                t2.phone,
+                t2.name,
+                t2.image
+            from
+                base_orders_stats t1
+            left join user_info t2 on
+                t1.operator = t2.user_id
+            where
+                t1.order_id = '{}'
+            order by
+                t1.time asc;'''.format(order_id)
 
         cursor.execute(order_sql)
         order_result = cursor.fetchall()
         cursor.execute(products_sql)
         products_result = cursor.fetchall()
+        cursor.execute(stats_sql)
+        stats_result = cursor.fetchall()
         data, products = {}, []
         for res in order_result:
-            data["client_id"] = res[0] or ""
             data["state"] = res[1] or ""
 
             data["creator_id"] = res[2] or ""
@@ -726,29 +746,33 @@ class OrderDetail(APIView):
             data["collected"] = res[4] or 0
             data['plan_arrival_time'] = res[5] or 0
             data['actual_arrival_time'] = res[6] or 0
-            data['remark'] = res[7] or ''
+            data['order_type'] = res[14]
             data['client'] = {}
             data['client']['name'] = res[8] or ''
             data['client']['contact'] = res[9] or ''
             data['client']['phone'] = res[10] or ''
             data['client']['position'] = res[11] or ''
             data['client']['address'] = res[12] or ''
+            data['client']["client_id"] = res[0] or ""
 
-            state_time_dict = {
-                "1": res[13],
-                "2": res[14],
-                "3": res[15],
-                "4": res[16],
-                "5": res[17],
-                "6": res[18]
-            }
-            data['state_time'] = state_time_dict[res[1]]
-
-            if (res[1] != '1' and res[1] != '5') and res[1]:
-                data['approve'] = {}
-                data['approve']['name'] = res[19]
-                data['approve']['phone'] = res[20]
-                data['approve']['time'] = res[14]
+            if res[14] == OrderType.self.push:
+                data['create_time'] = res[13]
+                data['remark'] = res[7] or ''
+            data['stats'] = []
+            alioss = AliOss()
+            for stat in stats_result:
+                image = stat[5]
+                if isinstance(image, memoryview):
+                    image = image.tobytes().decode()
+                temp = {
+                    'state': stat[0],
+                    'remark': stat[1],
+                    'time': stat[2],
+                    'phone': stat[3],
+                    'name': stat[4],
+                    'image': alioss.joint_image(image)
+                }
+                data['stats'].append(temp)
 
             if "1" in permission:
                 data["flag"] = "0"
@@ -760,11 +784,13 @@ class OrderDetail(APIView):
         for res in products_result:
             di = dict()
             di["id"] = res[0] or ""
-            di["count"] = res[1] or 0
-            di["unit_price"] = res[2] or 0
-            di["name"] = res[3] or ""
-            di["unit"] = res[4] or ""
-            di["category_name"] = res[5] or ""
+            di["count"] = round(res[1] if res[1] else 0, 2)
+            di["unit_price"] = round(res[2] if res[2] else 0, 2)
+            di["lowest_count"] = res[3] or 0
+            di["lowest_package"] = res[4] or 0
+            di["name"] = res[5] or ""
+            di["unit"] = res[6] or ""
+            di["category_name"] = res[7] or ""
             products.append(di)
 
         data["products"] = products
@@ -773,7 +799,7 @@ class OrderDetail(APIView):
     @method_decorator(order_approval_decorator)
     def put(self, request, order_id):
         """修改订单状态
-        1: 通过审批， 2：取消订单, 3: 终止订单, 4: 暂停订单，5：启动订单
+        1: 通过审批， 2：取消订单, 3: 终止订单, 4: 暂停订单，5：启动订单， 6：修改订单
 
         -- 订单状态 1: 待审批， 2：待发货, 3: 运输中, 4: 已送达，5：已取消, 6:已暂停
 
@@ -792,6 +818,7 @@ class OrderDetail(APIView):
         cursor.execute(order_state_sql)
         state_res = cursor.fetchone()
         state = request.data.get('state')
+        remark = request.data.get('remark', '')
         if not state_res:
             return Response({"res": "1", "errmsg": "输入参数错误"}, status=status.HTTP_400_BAD_REQUEST)
         if state == '1' and state_res[0] != '1':
@@ -812,6 +839,50 @@ class OrderDetail(APIView):
             '3': '5',
             '4': '6'
         }
+        # 修改订单产品信息
+        if state == '6':
+            products_list = request.data.get("products", [])  # 列表
+            client_sql = "select client_id, order_type from base_orders where id = '{}'".format(order_id)
+            cursor.execute(client_sql)
+            order_res = cursor.fetchone()
+            client_id = order_res[0] or ''
+            order_type = order_res[1]
+            if order_type == '2':
+                for product in products_list:
+                    product_id = product["id"]
+                    product_count = product["count"]
+                    order_update_sql = "update base_order_products set product_count = {} " \
+                                       "where order_id = '{}' and product_id = '{}'".format(product_count, order_id,
+                                                                                            product_id)
+                    cursor.execute(order_update_sql)
+            else:
+                delete_products = "delete from base_order_products where order_id = '{}'".format(order_id)
+                cursor.execute(delete_products)
+                for product in products_list:
+                    product_id = product["id"]
+                    product_count = product["count"]
+                    price_sql = '''
+                    select
+                        coalesce( unit_price,
+                        0 )
+                    from
+                        base_client_products
+                    where
+                        factory_id = '{}'
+                        and client_id = '{}'
+                        and product_id = '{}'; '''.format(factory_id, client_id, product_id)
+                    cursor.execute(price_sql)
+                    price_val = cursor.fetchone()[0] or ''
+                    order_products_sql = "insert into base_order_products (order_id, product_id, product_count, unit_price) " \
+                                         " values ('{0}', '{1}', {2}, {3});".format(order_id, product_id, product_count,
+                                                                                    price_val)
+                    cursor.execute(order_products_sql)
+            if remark:
+                update_sql = "update base_orders set remark = '{}' where id = '{}'".format(remark, order_id)
+                cursor.execute(update_sql)
+            connection.commit()
+            return Response({"res": 0}, status=status.HTTP_200_OK)
+
         if state != '5':
             update_state = update_state_dict[state]
             time_dict = {
@@ -828,15 +899,39 @@ class OrderDetail(APIView):
                 product_store = '''
                 select
                     t1.product_id,
-                    ( t1.product_count - (coalesce(t2.actual, 0) + coalesce(t2.pre_product,0) - coalesce(t2.prepared,0)
-                     - coalesce(t2.safety,0))) as product_store_count,
-                     t1.product_count
+                    case
+                        when ( 1 - t3.loss_coefficient ) = 0 then ( t1.product_count - ( coalesce( t2.actual,
+                        0 ) + coalesce( t2.pre_product,
+                        0 ) - coalesce( t2.prepared,
+                        0 ) - coalesce( t2.safety,
+                        0 )))
+                        else ( t1.product_count - ( coalesce( t2.actual,
+                        0 ) + coalesce( t2.pre_product,
+                        0 ) - coalesce( t2.prepared,
+                        0 ) - coalesce( t2.safety,
+                        0 ))) / ( 1 - t3.loss_coefficient )
+                    end as product_store_count,
+                    t1.product_count
                 from
                     base_order_products t1
-                left join (select * from  base_products_storage where factory = '{}') t2 on
+                left join (
+                    select
+                        *
+                    from
+                        base_products_storage
+                    where
+                        factory = '{}' ) t2 on
                     t1.product_id = t2.product_id
+                left join (
+                    select
+                        *
+                    from
+                        base_products
+                    where
+                        factory = '{}' ) t3 on
+                    t1.product_id = t3.id
                 where
-                    t1.order_id = '{}';'''.format(factory_id, order_id)
+                    t1.order_id = '{}';'''.format(factory_id, factory_id, order_id)
 
                 cursor.execute(product_store)
                 product_res = cursor.fetchall()
@@ -862,7 +957,7 @@ class OrderDetail(APIView):
                     create_invoice(cursor, order_id, '', factory_id, seq_id)
                 update_purchase_state(cursor, factory_id, order_id, '3')
                 # 预分配库存增加
-                product_prepare_stock(cursor, factory_id, product_ids, product_counts, '3', order_id)
+                product_prepare_stock(cursor, factory_id, product_ids, product_counts, '4', order_id)
 
             elif state == '2' or state == '3':
                 update_purchase_state(cursor, factory_id, order_id, '6')
@@ -876,10 +971,24 @@ class OrderDetail(APIView):
             cursor.execute("update base_orders set state =  before_pause_state where id = '{}';".format(order_id))
 
         try:
-            connection.commit()
             # 1: 通过审批， 2：取消订单, 3: 终止订单, 4: 暂停订单，5：启动订单
             # 订单通知状态 1: 订单审批通过， 2：订单已取消, 3: 订单已发货
             # 4: 订单已暂停，5：订单已启动, 6: 待审批订单， 7: 订单已送达
+            stats_state_dict = {
+                '1': OrderStatsState.approve.value,
+                '2': OrderStatsState.cancel_inside.value,
+                '3': OrderStatsState.cancel_inside.value,
+                '4': OrderStatsState.pause.value,
+                '5': OrderStatsState.resume.value
+            }
+
+            # 订单状态记录
+            order_stats_sql = "insert into base_orders_stats (order_id, state, remark, operator, optime) values " \
+                              "('{}', '{}', '{}', '{}', {})".format(order_id, stats_state_dict[state],
+                                                                    remark, user_id, timestamp)
+            cursor.execute(order_stats_sql)
+            connection.commit()
+
             notice_state_dict = {
                 '1': '1',
                 '2': '2',
@@ -919,20 +1028,33 @@ class OrderNew(APIView):
         connection, cursor = pgsql.connect_postgresql()
         order_id = generate_module_uuid(PrimaryKeyType.order.value, factory_id, seq_id)
         try:
-            order_sql = "insert into base_orders (id, factory, client_id, remark, plan_arrival_time, create_time, creator, state, order_type, del)" \
-                        "values ('{0}', '{1}', '{2}', '{3}', {4}, {5}, '{6}', '1', '1', '0')".format(order_id,
-                                                                                                     factory_id,
-                                                                                                     client_id, remark,
-                                                                                                     plan_arrival_time,
-                                                                                                     timestamp, user_id)
+            order_sql = "insert into base_orders (id, factory, client_id, plan_arrival_time, create_time, " \
+                        "creator, state, order_type) values ('{0}', '{1}', '{2}', {3}, {4}, '{5}', " \
+                        "'1', '1')".format(order_id, factory_id, client_id, plan_arrival_time, timestamp, user_id)
+
+            order_stats_sql = "insert into base_orders_stats (order_id, state, remark, operator, optime) values " \
+                              "('{}', '{}', '{}', '{}', {})".format(order_id, '1', remark, user_id, timestamp)
+
             cursor.execute(order_sql)
+            cursor.execute(order_stats_sql)
             for product in products_list:
-                unit_price = product["unit_price"]
                 product_id = product["id"]
                 product_count = product["count"]
+                price_sql = '''
+                select
+                    coalesce( unit_price,
+                    0 )
+                from
+                    base_client_products
+                where
+                    factory_id = '{}'
+                    and client_id = '{}'
+                    and product_id = '{}'; '''.format(factory_id, client_id, product_id)
+                cursor.execute(price_sql)
+                price_val = cursor.fetchone()[0] or ''
                 order_products_sql = "insert into base_order_products (order_id, product_id, product_count, unit_price) " \
                                      " values ('{0}', '{1}', {2}, {3});".format(order_id, product_id, product_count,
-                                                                                unit_price)
+                                                                                price_val)
                 cursor.execute(order_products_sql)
 
             order_track_sql = "insert into base_order_track (order_id, type, val) VALUES ('{}','1',{});".format(
@@ -1725,25 +1847,37 @@ class Products(APIView):
 
     def get(self, request):
         factory_id = request.redis_cache["factory_id"]
+        client_id = request.query_params.get('client_id', '')
         sql = '''
             select
-                t1.id,
-                t2."name",
-                t2.unit,
-                t3.id as category_id,
-                t3."name" as category_name,
-                coalesce(t4.actual, 0) + coalesce(t4.pre_product, 0) - coalesce(t4.prepared, 0) - coalesce(t4.safety, 0)
-                 as stock_count
-            from
-                base_products t1
-            left join base_materials_pool t2 on
-                t1.id = t2.id
-            left join base_material_category_pool t3 on
-                t2.category_id = t3.id
-            left join base_products_storage t4 on
-                t1.id = t4.product_id
-            where
-                t1.factory = '{}' and t4.factory = '{}';'''.format(factory_id, factory_id)
+                    t2.id,
+                    t2.name,
+                    t2.unit,
+                    t1.unit_price,
+                    t3.lowest_package,
+                    t3.lowest_count
+                from
+                    (
+                    select
+                        product_id,
+                        unit_price
+                    from
+                        base_client_products
+                    where
+                        factory_id = '{0}'
+                        and client_id = '{1}' ) t1
+                left join base_materials_pool t2 on
+                    t1.product_id = t2.id
+                left join (
+                    select
+                        id,
+                        lowest_package,
+                        lowest_count
+                    from
+                        base_products
+                    where
+                        factory = '{0}' ) t3 on
+                    t1.product_id = t3.id'''.format(factory_id, client_id)
 
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()
@@ -1752,16 +1886,12 @@ class Products(APIView):
         result = cursor.fetchall()
         data = []
         for res in result:
-            product = {
-                'id': res[0],
-                'name': res[1],
-                'unit': res[2],
-                'stock_count': res[5]
-            }
-            find_res = list(filter(lambda x: x['category_id'] == res[3], data))
-            if find_res:
-                find_res[0]['list'].append(product)
-            else:
-                data.append({'category_id': res[3], 'category_name': res[4], 'list': [product]})
-
+            temp = dict()
+            temp['id'] = res[0]
+            temp['name'] = res[1]
+            temp['unit'] = res[2]
+            temp['unit_price'] = res[3]
+            temp['lowest_package'] = res[4]
+            temp['lowest_count'] = res[5]
+            data.append(temp)
         return Response({"list": data}, status=status.HTTP_200_OK)
