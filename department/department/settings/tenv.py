@@ -89,9 +89,9 @@ WSGI_APPLICATION = 'department.wsgi.application'
 # https://docs.djangoproject.com/en/1.11/ref/settings/#databases
 
 # 测试环境 数据库配置
-POSTGRESQL_DATABASE = os.environ.get("PG_DATABASE") or "imd2"
-POSTGRESQL_USER = os.environ.get("PG_USER") or "imd2"
-POSTGRESQL_PASSWORD = os.environ.get("PG_PASSWORD") or "imd2"
+POSTGRESQL_DATABASE = os.environ.get("PG_DATABASE") or "dsd"
+POSTGRESQL_USER = os.environ.get("PG_USER") or "postgres"
+POSTGRESQL_PASSWORD = os.environ.get("PG_PASSWORD") or "123456"
 POSTGRESQL_HOST = os.environ.get("PG_HOST") or "127.0.0.1"
 POSTGRESQL_PORT = os.environ.get("PG_PORT") or "5432"
 
