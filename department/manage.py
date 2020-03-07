@@ -8,7 +8,7 @@ if __name__ == "__main__":
     测试环境: tenv
     正式环境: prod
     """
-    setting_name = os.environ.get("SETTING_NAME") or "tenv"
+    setting_name = os.environ.get("SETTING_NAME") or "dev"
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "department.settings." + setting_name)
     try:
         from django.core.management import execute_from_command_line

@@ -79,11 +79,11 @@ class RedisMiddleware(MiddlewareMixin):
                     from
                         user_info t1
                     left join factory_users t2 on
-                        t1.user_id = t2.phone
+                        t1.phone = t2.phone
                     left join factorys t3 on
                         t2.factory = t3.id
                     where
-                        t1.user_id = '{}';'''.format(user_id)
+                        t1.phone = '{}';'''.format(user_id)
                 cursor.execute(sql)
                 result = cursor.fetchone()
                 if result:
