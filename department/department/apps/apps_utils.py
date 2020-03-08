@@ -3,15 +3,15 @@ import base64
 import oss2
 import pika
 import shortuuid
-from itertools import islice
-
-from django.db import connections
-
 import random
-from django.conf import settings
-from django_redis import get_redis_connection
 import datetime
 import time
+
+from itertools import islice
+from django.db import connections
+from django.conf import settings
+from django_redis import get_redis_connection
+from psycopg2.pool import AbstractConnectionPool
 
 from constants import BG_QUEUE_NAME
 
@@ -48,6 +48,35 @@ def generate_uuid():
     # u22 = shortuuid.uuid()  # 22位uuid
     u18 = shortuuid.ShortUUID().random(length=18)  # 18位uuid
     return u18
+
+
+class PostgresqlPool(AbstractConnectionPool):
+    """Postgresql数据库连接池
+    单例模式: 保证只创建一个对象
+    注意数据库配置文件conf中时区设置
+    """
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):  # 创建对象
+        if cls._instance is None:
+            cls._instance = super().__new__(cls, *args, **kwargs)
+
+        print('cls._instance', cls._instance, 'id--->', id(cls._instance))
+        return cls._instance
+
+    def __init__(self):  # 初始化对象
+        super().__init__(minconn=5, maxconn=20, database=settings.POSTGRESQL_DATABASE, user=settings.POSTGRESQL_USER,
+                         password=settings.POSTGRESQL_PASSWORD, host=settings.POSTGRESQL_HOST,
+                         port=settings.POSTGRESQL_PORT)
+
+    def connect_postgresql(self):
+        connection = AbstractConnectionPool._getconn(self)
+        cursor = connection.cursor()
+        # print(connection)
+        return connection, cursor
+
+    def disconnect_postgresql(self, connection):
+        AbstractConnectionPool._putconn(self, connection)
 
 
 class UtilsPostgresql(object):
