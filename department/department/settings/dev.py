@@ -156,13 +156,13 @@ LOGGING = {
     },
     'handlers': {
         'console': {
-            'level': 'ERROR',
+            'level': 'INFO',
             'filters': ['require_debug_true'],
             'class': 'logging.StreamHandler',
             'formatter': 'simple'
         },
         'file': {
-            'level': 'DEBUG',
+            'level': 'INFO',
             'class': 'logging.handlers.RotatingFileHandler',
             'filename': os.path.join(os.path.dirname(BASE_DIR), "logs/background.log"),
             'maxBytes': 300 * 1024 * 1024,

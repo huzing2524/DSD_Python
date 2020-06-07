@@ -39,13 +39,19 @@ finally:
 
 
 class GenerateToken(APIView):
-    """generate/token"""
+    """generate/token
+    Token:
+        过期时间 365 days * 10
+        添加user_id字段
+    localStorage.setItem('Authorization', 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VybmFtZSI6IjEzMjI3MTQyNzE2IiwidXNlcl9pZCI6IjRiZmRiNDdiLWI4ODktNDBhYS1hYmVlLTVmNjcxYmEwZGRiYiIsImV4cCI6MTkwNjg4MjIxMn0.Z1SdEnatiWXbzwcxWrT9f3Ardnya-pDO9H2bHkKgBKw')
+    """
     permission_classes = []
 
     def get(self, request):
         phone = request.query_params.get("phone")
-        payload = {"username": phone, "exp": datetime.datetime.utcnow() + datetime.timedelta(
-            days=7)}
+        user_id = request.query_params.get("user_id")
+        payload = {"username": phone, "user_id": user_id,
+                   "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7)}
         jwt_token = jwt.encode(payload, settings.JWT_SECRET_KEY)
         print("jwt_token=", jwt_token)
 
