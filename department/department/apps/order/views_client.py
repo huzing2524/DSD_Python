@@ -1,4 +1,3 @@
-import json
 import logging
 import time
 import traceback
@@ -110,7 +109,7 @@ class Clients(APIView):
             from
                 base_clients t1
             left join factorys t2 on
-                t1.id = t2.id
+                t1.factory = t2.id
             left join (
                 select
                     t1.factory_id,
@@ -166,7 +165,7 @@ class Clients(APIView):
             return Response({"res": 1, "errmsg": "请检查输入参数！"},
                             status=status.HTTP_200_OK)
 
-        user_phone = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
 
         pgsql = UtilsPostgresql()
@@ -178,14 +177,14 @@ class Clients(APIView):
                 sql = "insert into base_clients (id, factory, name, contacts, phone, position, create_time, group_id, " \
                       "creator, region, address, industry, deliver_days) values ('{}', '{}', '{}','{}','{}', '{}', {}, '{}', '{}', '{}'," \
                       " '{}', '{}')".format(client_id, factory_id, name, contacts, phone, position, timestamp, group_id,
-                                            user_phone, region,
+                                            user_id, region,
                                             address, industry, deliver_days)
             else:
                 sql = "insert into base_clients (id, factory, name, contacts, phone, position, create_time, " \
                       "creator, region, address, industry, deliver_days) values ('{}', '{}', '{}','{}','{}', '{}'," \
                       " {}, '{}', '{}', '{}', '{}', {})".format(client_id, factory_id, name, contacts,
                                                                 phone, position, timestamp,
-                                                                user_phone, region, address, industry, deliver_days)
+                                                                user_id, region, address, industry, deliver_days)
 
             pool_sql = "insert into base_clients_pool (id, name, contacts, phone, position, create_time, " \
                        "region, address, industry, verify) values ('{}', '{}', '{}','{}','{}', {}, '{}', '{}', '{}', " \
@@ -193,6 +192,10 @@ class Clients(APIView):
                                                                    timestamp, region,
                                                                    address, industry)
             cursor.execute(pool_sql)
+            # base_clients (id) references base_clients_pool (id)
+            # 自动提交无效，base_clients_pool未生成记录，base_clients外键关联不到，报错
+            connection.commit()
+
             cursor.execute(sql)
 
             for x in products:
@@ -237,7 +240,7 @@ class ClientSearch(APIView):
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()
         try:
-            cursor.execute("select id, name from base_clients_pool where name like %s order by name asc limit 5;",
+            cursor.execute("select id, name from base_clients_pool where name like %s order by name limit 5;",
                            ['%' + name + '%'])
             res = cursor.fetchall()
             data = []

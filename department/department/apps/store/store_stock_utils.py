@@ -13,16 +13,15 @@ def product_prepare_stock(cursor, factory_id, product_ids, counts, source_type, 
     产品预分配库存的增减
     :param cursor:
     :param factory_id:
-    :param product_ids: 产品id数组，
+    :param product_ids: 产品id数组
     :param counts: [1,2,3] 对应产品数量
     :param source_type: 0: 入库-完工入库单, 1: 出库-发货单, 2: 库存盘点， 4:订单
     :param source_id: 对应类型id
     :return:
     """
-    logger.info(counts)
-    logger.info(product_ids)
+    # logger.info(counts)
+    # logger.info(product_ids)
     for index, product_id in enumerate(product_ids):
-        print(index)
         log_sql = """
                 insert into base_products_log
                   (product_id, type, count, source, source_id, factory, time)

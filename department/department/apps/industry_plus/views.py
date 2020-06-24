@@ -27,10 +27,7 @@ class IndustryPlusScore(APIView):
     """测测我的企业智能化程度, 评分 industry_plus/score"""
 
     def get(self, request):
-        phone = request.redis_cache["user_id"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
+        phone = request.redis_cache["phone"]
 
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()
@@ -71,10 +68,7 @@ class IndustryPlusScore(APIView):
             return Response({"res": 1, "errmsg": "lack of company_name or content_list! 缺少公司名称"},
                             status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["user_id"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
+        phone = request.redis_cache["phone"]
 
         # 去重处理
         content_list = list(set(content_list))
@@ -93,22 +87,6 @@ class IndustryPlusScore(APIView):
         connection, cursor = pgsql.connect_postgresql()
 
         try:
-            # cursor.execute("select score from industry_plus_test where phone != '%s' order by score asc;" % phone)
-            # old_score_list = cursor.fetchall()
-            # less_list = []
-
-            # if old_score_list:
-            #     if len(old_score_list) > 1:
-            #         for old_score in old_score_list:
-            #             if old_score[0] < score:
-            #                 less_list.append(score)
-            #         # print("old_score_list", old_score_list), print(len(less_list), len(old_score_list))
-            #         beyond = float("%.4f" % (len(less_list) / (len(old_score_list) + 1)))
-            #     else:
-            #         beyond = 0
-            # else:
-            #     beyond = 0
-
             cursor.execute("delete from industry_plus_test where phone = '%s';" % phone)
             cursor.execute("insert into industry_plus_test (phone, company_name, intelligent_degree, score, time) "
                            "VALUES ('%s', '%s', '{%s}', %s, %d);" % (
@@ -139,10 +117,7 @@ class IndustryPlusFactoryNew(APIView):
             return Response({"res": 1, "errmsg": "please write complete information! 请填写完整信息，以便联系您！"},
                             status=status.HTTP_200_OK)
 
-        phone = request.redis_cache["user_id"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
+        phone = request.redis_cache["phone"]
 
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()

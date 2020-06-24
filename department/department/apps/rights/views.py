@@ -216,11 +216,11 @@ class RightsNew(APIView):
         try:
             cursor.execute(
                 "insert into factory_users (phone, rights, factory, time) values ('%s', '{%s}', '%s', %d)" % (
-                    new_user_id, ','.join(rights), factory_id, int(time.time())))
+                    new_phone, ','.join(rights), factory_id, int(time.time())))
 
             # 删除新增人员之前的权限(之前加入体验版然后退出，后来加入某个工厂，缓存没有删除，会出错)
             redis_conn = get_redis_connection("default")
-            redis_conn.hdel(new_phone, "permission", "factory_id")
+            redis_conn.hdel(new_phone, "permission", "factory_id", "seq_id", "user_id")
 
             # 发送消息通知
             message = {'resource': 'PyRightsNew', 'type': 'POST',
@@ -249,15 +249,12 @@ class RightsModify(APIView):
         if not all([new_phone, new_rights]):
             return Response({"res": 1, "errmsg": "缺少参数！"}, status=status.HTTP_200_OK)
 
-        user_id = request.redis_cache["user_id"]
+        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
 
         cursor = connection.cursor()
 
-        cursor.execute("select user_id from user_info where phone = '{}';".format(new_phone))
-        new_user_id = cursor.fetchone()[0]
-
-        if user_id == new_user_id:
+        if phone == new_phone:
             return Response({"res": 1, "errmsg": "不能修改自身权限！"}, status=status.HTTP_200_OK)
         # 修改权限不能添加超级管理员的权限
         if "1" in new_rights:
@@ -266,19 +263,19 @@ class RightsModify(APIView):
         new_rights = list(set(new_rights))  # 去重
 
         try:
-            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_user_id)
+            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_phone)
             phone_check = cursor.fetchone()[0]
             if phone_check <= 0:
                 return Response({"res": 1, "errmsg": "该号码的用户不存在！"}, status=status.HTTP_200_OK)
 
             cursor.execute("update factory_users set rights = '{%s}' where phone = '%s' and factory = '%s';" % (
-                ','.join(new_rights), new_user_id, factory_id))
+                ','.join(new_rights), new_phone, factory_id))
 
             connection.commit()
 
             # new_phone用户的权限发生变化，删除Redis的缓存，在中间件中重新读取数据库获取权限
             redis_conn = get_redis_connection("default")
-            redis_conn.hdel(new_phone, "permission", "factory_id")
+            redis_conn.hdel(new_phone, "permission", "factory_id", "seq_id", "user_id")
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:
@@ -297,36 +294,33 @@ class RightsDelete(APIView):
         if not new_phone:
             return Response({"res": 1, "errmsg": "缺少参数，无法删除！"}, status=status.HTTP_200_OK)
 
-        user_id = request.redis_cache["user_id"]
+        phone = request.redis_cache["phone"]
         factory_id = request.redis_cache["factory_id"]
 
         cursor = connection.cursor()
 
-        cursor.execute("select user_id from user_info where phone = '{}';".format(new_phone))
-        new_user_id = cursor.fetchone()[0]
-
-        if user_id == new_user_id:
+        if phone == new_phone:
             return Response({"res": 1, "errmsg": "不能删除自身权限！"}, status=status.HTTP_200_OK)
 
         try:
-            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_user_id)
+            cursor.execute("select count(1) from factory_users where phone = '%s';" % new_phone)
             phone_check = cursor.fetchone()[0]
             if phone_check <= 0:
                 return Response({"res": "1", "errmsg": "此号码不存在！"}, status=status.HTTP_200_OK)
 
             cursor.execute("select count(*) from factory_users where phone = '%s' and factory = '%s' and "
-                           "'1' = ANY(rights);" % (new_user_id, factory_id))
+                           "'1' = ANY(rights);" % (new_phone, factory_id))
             result = cursor.fetchone()[0]
             if result >= 1:
                 return Response({"res": 1, "errmsg": "该号码是超级管理员，不能删除权限！"}, status=status.HTTP_200_OK)
 
             cursor.execute("delete from factory_users where phone = '%s' and factory = '%s';" %
-                           (new_user_id, factory_id))
+                           (new_phone, factory_id))
             connection.commit()
 
             # new_phone用户被删除，删除Redis的缓存
             redis_conn = get_redis_connection("default")
-            redis_conn.hdel(new_phone, "permission", "factory_id")
+            redis_conn.hdel(new_phone, "permission", "factory_id", "seq_id", "user_id")
 
             return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:

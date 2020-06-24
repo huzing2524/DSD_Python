@@ -23,7 +23,7 @@ def update_purchase_state(cursor, factory_id, order_id, state):
     采购单状态 1: 待审批， 2: 已审核待确认 3：采购中, 4: 运输中, 5：已入库, 6:已取消
     :param cursor: 数据库游标
     :param factory_id: 工厂ID
-    :param order_id: 采购单id
+    :param order_id: 订单id
     :param state:
         '3' -> 相关订单审核后，采购单设置"采购中"
         '4' -> 相关发货单确认后，采购单设置"运输中"

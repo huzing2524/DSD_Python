@@ -30,9 +30,8 @@ class JwtTokenMiddleware(MiddlewareMixin):
                 if "username" in payload and "exp" in payload:
                     # print("payload=", payload)
                     REDIS_CACHE["phone"] = payload["username"]
-                    REDIS_CACHE["user_id"] = payload["user_id"] if "user_id" in payload else payload["username"]
+                    REDIS_CACHE["user_id"] = payload.get("user_id", '')
                     request.redis_cache = REDIS_CACHE
-                    # print("request.redis_cache=", request.redis_cache)
                 else:
                     raise jwt.InvalidTokenError
             except jwt.ExpiredSignatureError:
@@ -58,21 +57,22 @@ class RedisMiddleware(MiddlewareMixin):
     def process_request(self, request):
         phone = request.redis_cache["phone"]
         user_id = request.redis_cache["user_id"]
-        if not user_id:
-            user_id = phone
+
         conn = get_redis_connection("default")
         # print(conn.hvals(phone))
         if phone.isdigit():
+            user_id = conn.hget(user_id, "user_id") or user_id
             factory_id = conn.hget(phone, "factory_id")
             permission = conn.hget(phone, "permission")
             seq_id = conn.hget(phone, "seq_id")
 
-            if not factory_id or not permission or not seq_id:
+            if not user_id or not factory_id or not permission or not seq_id:
                 pgsql = UtilsPostgresql()
                 connection, cursor = pgsql.connect_postgresql()
                 pl = conn.pipeline()
                 sql = '''
                     select
+                        t1.user_id,
                         t2.rights,
                         t2.factory,
                         t3.seq_id
@@ -83,14 +83,15 @@ class RedisMiddleware(MiddlewareMixin):
                     left join factorys t3 on
                         t2.factory = t3.id
                     where
-                        t1.phone = '{}';'''.format(user_id)
+                        t1.phone = '{}';'''.format(phone)
                 cursor.execute(sql)
                 result = cursor.fetchone()
                 if result:
-                    permission, factory_id, seq_id = ",".join(result[0]), result[1], result[2]
+                    user_id, permission, factory_id, seq_id = result[0], ",".join(result[1]), result[2], result[3]
                     pl.hset(phone, "permission", permission)
                     pl.hset(phone, "factory_id", factory_id)
                     pl.hset(phone, "seq_id", seq_id)
+                    pl.hset(phone, "user_id", user_id)
                     pl.execute()
                 else:
                     permission, factory_id = "", ""
@@ -98,6 +99,8 @@ class RedisMiddleware(MiddlewareMixin):
             request.redis_cache["factory_id"] = factory_id
             request.redis_cache["permission"] = permission
             request.redis_cache["seq_id"] = seq_id
+            request.redis_cache["user_id"] = user_id
+            # print("request.redis_cache=", request.redis_cache)
         else:
             return None
 

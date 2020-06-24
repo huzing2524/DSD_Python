@@ -64,7 +64,6 @@ class OrderMain(APIView):
             from
                 (
                 select
-                    client_id,
                     sum( price ) as price,
                     count( 1 ),
                     case
@@ -81,17 +80,11 @@ class OrderMain(APIView):
                     left join (
                         select
                             order_id,
-                            sum( price ) as price
+                            sum(unit_price * product_count) as price
                         from
-                            (
-                            select
-                                order_id,
-                                unit_price * product_count as price
-                            from
-                                base_order_products ) t
-                        group by
-                            order_id ) t2 on
-                        t1.id = t2.order_id
+                            base_order_products
+                        group by order_id ) t2 on
+                            t1.id = t2.order_id
                     where
                         t1.factory = '{0}'
                         and t1.state != '5'
@@ -316,8 +309,7 @@ class OrderCRank(APIView):
                 temp['amount'] = val[0]
                 data.append(temp)
 
-            return Response({"list": data},
-                            status=status.HTTP_200_OK)
+            return Response({"list": data}, status=status.HTTP_200_OK)
         except Exception as e:
             traceback.print_exc()
             logger.error(e)
@@ -430,14 +422,12 @@ class OrderList(APIView):
             left join (
                 select
                     order_id,
-                    array_agg( product_id ) as product_id,
                     array_agg( product_count ) as product_count,
                     array_agg( name ) as product_name,
                     array_agg( unit ) as unit
                 from
                     (
                     select
-                        t1.product_id,
                         t1.product_count,
                         t1.order_id,
                         t2.name,
@@ -463,6 +453,7 @@ class OrderList(APIView):
             order by
                 create_time desc;'''.format(factory_id)
 
+        # 3: 订单金额列表, 5: 客户贡献度列表
         # 按客户分类， 订单数大于1为老客户
         sql3 = '''
             select
@@ -479,14 +470,12 @@ class OrderList(APIView):
             left join (
                 select
                     order_id,
-                    array_agg( product_id ) as product_id,
                     array_agg( product_count ) as product_count,
                     array_agg( name ) as product_name,
                     array_agg( unit ) as unit
                 from
                     (
-                    select
-                        t1.product_id,
+                    select 
                         t1.product_count,
                         t1.order_id,
                         t2.name,
@@ -509,6 +498,7 @@ class OrderList(APIView):
             order by
                 t1.create_time desc;'''.format(factory_id)
 
+        # 4: 订单生产进度列表
         sql4 = '''
         select
             t1.id,
@@ -531,14 +521,12 @@ class OrderList(APIView):
         left join (
             select
                 order_id,
-                array_agg( product_id ) as product_id,
                 array_agg( product_count ) as product_count,
                 array_agg( name ) as product_name,
                 array_agg( unit ) as unit
             from
                 (
                 select
-                    t1.product_id,
                     t1.product_count,
                     t1.order_id,
                     t2.name,
@@ -729,7 +717,7 @@ class OrderDetail(APIView):
             where
                 t1.order_id = '{}'
             order by
-                t1.time asc;'''.format(order_id)
+                t1.time;'''.format(order_id)
 
         cursor.execute(order_sql)
         order_result = cursor.fetchall()
@@ -758,21 +746,22 @@ class OrderDetail(APIView):
             if res[14] == OrderType.self.push:
                 data['create_time'] = res[13]
                 data['remark'] = res[7] or ''
-            data['stats'] = []
-            alioss = AliOss()
-            for stat in stats_result:
-                image = stat[5]
-                if isinstance(image, memoryview):
-                    image = image.tobytes().decode()
-                temp = {
-                    'state': stat[0],
-                    'remark': stat[1],
-                    'time': stat[2],
-                    'phone': stat[3],
-                    'name': stat[4],
-                    'image': alioss.joint_image(image)
-                }
-                data['stats'].append(temp)
+
+        data['stats'] = []
+        alioss = AliOss()
+        for stat in stats_result:
+            image = stat[5]
+            if isinstance(image, memoryview):
+                image = image.tobytes().decode()
+            temp = {
+                'state': stat[0],
+                'remark': stat[1],
+                'time': stat[2],
+                'phone': stat[3],
+                'name': stat[4],
+                'image': alioss.joint_image(image)
+            }
+            data['stats'].append(temp)
 
             if "1" in permission:
                 data["flag"] = "0"
@@ -847,7 +836,7 @@ class OrderDetail(APIView):
             order_res = cursor.fetchone()
             client_id = order_res[0] or ''
             order_type = order_res[1]
-            if order_type == '2':
+            if order_type == '2':  # 订单类型 2：推送订单
                 for product in products_list:
                     product_id = product["id"]
                     product_count = product["count"]
@@ -855,7 +844,7 @@ class OrderDetail(APIView):
                                        "where order_id = '{}' and product_id = '{}'".format(product_count, order_id,
                                                                                             product_id)
                     cursor.execute(order_update_sql)
-            else:
+            else:  # 订单类型 1：自建订单
                 delete_products = "delete from base_order_products where order_id = '{}'".format(order_id)
                 cursor.execute(delete_products)
                 for product in products_list:
@@ -863,8 +852,7 @@ class OrderDetail(APIView):
                     product_count = product["count"]
                     price_sql = '''
                     select
-                        coalesce( unit_price,
-                        0 )
+                        coalesce( unit_price, 0.0)
                     from
                         base_client_products
                     where
@@ -872,7 +860,7 @@ class OrderDetail(APIView):
                         and client_id = '{}'
                         and product_id = '{}'; '''.format(factory_id, client_id, product_id)
                     cursor.execute(price_sql)
-                    price_val = cursor.fetchone()[0] or ''
+                    price_val = cursor.fetchone()[0] or 0.0
                     order_products_sql = "insert into base_order_products (order_id, product_id, product_count, unit_price) " \
                                          " values ('{0}', '{1}', {2}, {3});".format(order_id, product_id, product_count,
                                                                                     price_val)
@@ -886,7 +874,7 @@ class OrderDetail(APIView):
         if state != '5':
             update_state = update_state_dict[state]
             time_dict = {
-                '1': 'approval_time = {}, approver = {}'.format(timestamp, user_id),
+                '1': "approval_time = {}, approver = '{}'".format(timestamp, user_id),  # fix bug: approver 类型: str
                 '2': 'cancel_time = {0}'.format(timestamp),
                 '3': 'cancel_time = {0}'.format(timestamp),
                 '4': "pause_time = {0}, before_pause_state = state ".format(timestamp),
@@ -1002,6 +990,7 @@ class OrderDetail(APIView):
             rabbitmq.send_message(json.dumps(message))
             return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:
+            traceback.print_exc()
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
@@ -1020,7 +1009,7 @@ class OrderNew(APIView):
             "plan_arrival_time", timestamp)  # 交货日期
         remark = request.data.get("remark", "")  # 备注
 
-        user_id = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
         seq_id = request.redis_cache["seq_id"]
 
@@ -1076,770 +1065,770 @@ class OrderNew(APIView):
             pgsql.disconnect_postgresql(connection)
 
 
-class OrderDelete(APIView):
-    """删除订单 order/del"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        order_id = request.data.get("id")
-        if not order_id:
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-        try:
-            cursor.execute(
-                "select count(1) from orders where id = '%s';" % order_id)
-            order_check = cursor.fetchone()[0]
-            if order_check == 0:
-                return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
-            cursor.execute("delete from orders where id = '%s';" % order_id)
-            cursor.execute(
-                "delete from finance_logs where use_id = '%s';" % order_id)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class OrderModify(APIView):
-    """修改订单 order/modify"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        timestamp = int(time.time())
-        order_id = request.data.get("id")  # 订单ID
-        products_list = request.data.get("products", [])  # 列表
-        client_id = request.data.get("client_id")  # 客户ID
-        deliver_time = request.data.get("deliver_time", 0)  # 交货日期
-        remark = request.data.get("remark", "")  # 备注
-        contract = request.data.get("contract")  # 合同照片
-        if not order_id:
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-        alioss = AliOss()
-
-        cursor.execute(
-            "select count(1) from orders where id = '%s';" % order_id)
-        order_check = cursor.fetchone()[0]
-        if order_check == 0:
-            return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
-
-        cursor.execute(
-            "select name from factory_clients where id = '%s';" % client_id)
-        client_name = cursor.fetchone()[0] or ""
-
-        try:
-            if contract:
-                image_id, image_url = alioss.upload_image(contract)
-                cursor.execute(
-                    "update orders set client_id = '%s', deliver_time = %d, remark = '%s', time = %d, contract = '%s' "
-                    "where id = '%s';" % (client_id, deliver_time, remark, timestamp, image_id, order_id))
-            else:
-                cursor.execute(
-                    "update orders set client_id = '%s', deliver_time = %d, remark = '%s', time = %d where id = '%s';"
-                    % (client_id, deliver_time, remark, timestamp, order_id))
-            cursor.execute(
-                "delete from order_products where order_id = '%s';" % order_id)
-
-            finace_count = 0
-            for product in products_list:
-                finace_count += product["sell_price"]
-                product_id = product["product_id"]
-                product_count = product["product_count"]
-                sell_price = product["sell_price"]
-                order_products_sql = "insert into order_products (order_id, product_id, product_count, sell_price," \
-                                     " time) values ('%s', '%s', %d, %s, %d);" % (
-                                         order_id, product_id, product_count, str(sell_price), timestamp)
-                cursor.execute(order_products_sql)
-            if finace_count >= 0:
-                cursor.execute("update finance_logs set type = '%s', count = %d, time = %d where use_id = '%s';" % (
-                    client_name, finace_count, timestamp, order_id))
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class OrderTrack(APIView):
-    """订单追踪 order/track"""
-    permission_classes = [OrderPermission]
-
-    def get(self, request):
-        order_id = request.query_params.get("id")  # 订单id
-        # 订单追踪类型，all: 订单所有状态追踪, money: 订单收款情况追踪, products: 订单产品状态追踪
-        order_type = request.query_params.get("type")
-
-        condition = ""
-        if order_type == "all":
-            pass
-        elif order_type == "money":
-            condition += " and type = '%s' " % OrderTrackType.money.value
-        elif order_type == "products":
-            condition += " and type = '%s' " % OrderTrackType.products.value
-
-        track_sql = "select id, type, val, time from order_track where order_id = '%s'" % order_id + condition + \
-                    " order by time desc;"
-        products_sql = "select sum(product_count) as val from order_products where order_id = '%s' group by " \
-                       "order_id;" % order_id
-        money_sql = "select sum(sell_price) as val from order_products where order_id = '%s' group by " \
-                    "order_id;" % order_id
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            cursor.execute(track_sql)
-            track_result = cursor.fetchall()
-            cursor.execute(products_sql)
-            counts_result = cursor.fetchone()
-            counts_result = counts_result[0] if counts_result else 0
-            cursor.execute(money_sql)
-            money_result = cursor.fetchone()
-            money_result = money_result[0] if money_result else 0
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-        data, track_list = {}, []
-        for track in track_result:
-            di = dict()
-            di["id"] = track[0]
-            di["type"] = track[1]
-            di["val"] = track[2]
-            di["time"] = track[3]
-            track_list.append(di)
-
-        data["list"] = track_list
-        if order_type == "all":
-            pass
-        elif order_type == "money":
-            data["val"] = money_result
-        elif order_type == "products":
-            data["val"] = counts_result
-
-        return Response(data, status=status.HTTP_200_OK)
-
-
-class OrderDeliver(APIView):
-    """订单发货、未发货 order/deliver"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        order_id = request.data.get("id")  # 订单id
-        state = request.data.get("state", "0")  # 发货: 0, 未发货: 1
-        deliver_time = request.data.get(
-            "deliver_time", int(time.time()))  # 发货时间戳
-        remark = request.data.get("remark", "")  # 备注
-        if not order_id:
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        timestamp = int(time.time())
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select count(1) from orders where id = '%s';" % order_id)
-        order_check = cursor.fetchone()[0]
-        # print(order_check)
-        if order_check == 0:
-            return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
-
-        cursor.execute("select state from orders where id = '%s';" % order_id)
-        order_state = cursor.fetchone()[0]
-
-        try:
-            if order_state == state:
-                cursor.execute("update order_track set time = %d where order_id = '%s' and type = '%s';" % (
-                    deliver_time, order_id, OrderTrackType.deliver.value))
-            else:
-                if order_state == "0":
-                    cursor.execute("delete from order_track where order_id = '%s' and type = '%s';" % (
-                        order_id, OrderTrackType.deliver.value))
-                    cursor.execute(
-                        "delete from products_log where use_id = '%s';" % order_id)
-                else:
-                    message = {'resource': 'PyOrderDeliver', 'type': 'POST',
-                               'params': {'Fac': factory_id, 'OrderId': order_id}}
-                    # print("message=", message)
-                    rabbitmq = UtilsRabbitmq()
-                    rabbitmq.send_message(json.dumps(message))
-
-                    cursor.execute(
-                        "insert into order_track (order_id, type, val, time) values ('%s', '%s', '', %d);" % (
-                            order_id, OrderTrackType.deliver.value, timestamp))
-                    cursor.execute(
-                        "select product_id, product_count from order_products where order_id = '%s';" % order_id)
-                    products_result = cursor.fetchall()
-                    for product in products_result:
-                        product_id = product[0]
-                        product_count = product[1]
-                        cursor.execute("insert into products_log (id, factory, use_id, parent_type, product_id, count, "
-                                       "time) values ('%s', '%s', '%s', 'order', '%s', %d, %d);" % (
-                                           generate_uuid(), factory_id, order_id, product_id, product_count,
-                                           int(deliver_time)))
-
-            cursor.execute("update orders set state = '%s', deliver_time = %d, remark = '%s' where id = '%s';" % (
-                state, deliver_time, remark, order_id))
-
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class OrderIncome(APIView):
-    """订单金额 order/income/{id}"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request, order_id):
-        """添加订单收款金额"""
-        if not order_id:  # 订单id
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
-        value = int(request.data.get("val"))  # 收款金额
-        timestamp = request.data.get("time")  # 时间戳
-        # print(order_id), print(value, type(value)), print(timestamp, type(timestamp))
-        if value < 0:
-            return Response({"res": 1, "errmsg": "order_id value less than 0! 订单id收款金额小于0！"}, status=status.HTTP_200_OK)
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select count(1) from orders where id = '%s';" % order_id)
-        id_check = cursor.fetchone()[0]
-        if id_check <= 0:
-            return Response({"res": 1, "errmsg": "order_id doesn't exist! 订单id不存在！"}, status=status.HTTP_200_OK)
-
-        try:
-            cursor.execute(
-                "update orders set collected = collected + %d where id = '%s';" % (value, order_id))
-            cursor.execute("insert into order_track (order_id, type, val, time) values ('%s', %s, '%s', %d);" % (
-                order_id, OrderTrackType.money.value, value, timestamp))
-            connection.commit()
-
-            message = {'resource': 'PyOrderIncome', 'type': 'POST',
-                       'params': {'Fac': factory_id, 'OrderId': order_id, "Val": value}}
-            # print("message=", message)
-            rabbitmq = UtilsRabbitmq()
-            rabbitmq.send_message(json.dumps(message))
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-    def put(self, request, track_id):
-        """修改订单收款金额"""
-        if not track_id or not track_id.isdigit():  # 收款记录id
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少收款记录id参数。"}, status=status.HTTP_200_OK)
-        value = int(request.data.get("val"))  # 收款金额
-        timestamp = request.data.get("time")  # 时间戳
-        # print(track_id, type(track_id)), print(value, type(value)), print(timestamp, type(timestamp))
-        if value < 0:
-            return Response({"res": 1, "errmsg": "order_id value less than 0! 订单id收款金额小于0！"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select count(1) from order_track where id = '%s';" % track_id)
-        id_check = cursor.fetchone()[0]
-        if id_check <= 0:
-            return Response({"res": 1, "errmsg": "order track_id doesn't exist! 订单收款记录id不存在！"},
-                            status=status.HTTP_200_OK)
-
-        track_id = int(track_id)
-        try:
-            cursor.execute(
-                "select order_id, val from order_track where id = %d;" % track_id)
-            result = cursor.fetchone()
-            order_id, val = result[0], result[1] if result[1] else 0
-            # print(order_id, type(order_id)), print(val, type(val))
-            update_val = int(value) - int(val)
-            cursor.execute(
-                "update orders set collected = collected + %d where id = '%s';" % (update_val, order_id))
-            cursor.execute(
-                "update order_track set val = '%s', time = %d where id = %d;" % (value, timestamp, track_id))
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-    def delete(self, request, track_id):
-        """删除修改记录"""
-        if not track_id or not track_id.isdigit():  # 收款记录id
-            return Response({"res": 1, "errmsg": "lack of order_id. 缺少收款记录id参数。"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select count(1) from order_track where id = '%s';" % track_id)
-        id_check = cursor.fetchone()[0]
-        if id_check <= 0:
-            return Response({"res": 1, "errmsg": "order track_id doesn't exist! 订单收款记录id不存在！"},
-                            status=status.HTTP_200_OK)
-
-        track_id = int(track_id)
-        try:
-            cursor.execute(
-                "select order_id, val from order_track where id = %d;" % track_id)
-            result = cursor.fetchone()
-            order_id, val = result[0], result[1] if result[1] else 0
-            # print(order_id, type(order_id)), print(val, type(val))
-            update_val = - int(val)
-            cursor.execute(
-                "update orders set collected = collected + %d where id = '%s';" % (update_val, order_id))
-            cursor.execute("delete from order_track where id = %d;" % track_id)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsList(APIView):
-    """客户列表 clients/list"""
-    permission_classes = [OrderPermission]
-
-    def get(self, request):
-        group = request.query_params.get("group")  # 分组id,请求所有客户时不带此参数
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        data = []
-
-        try:
-            if group:
-                cursor.execute("select id, name, contacts, phone, position, region, address from factory_clients "
-                               "where factory = '%s' and group_id = '%s' order by name asc;" % (factory_id, group))
-            else:
-                cursor.execute("select id, name, contacts, phone, position, region, address from factory_clients "
-                               "where factory = '%s' order by name asc;" % factory_id)
-
-            result = cursor.fetchall()
-            for res in result:
-                di = dict()
-                di["id"] = res[0] or ""
-                di["name"] = res[1] or ""
-                di["contacts"] = res[2] or ""
-                di["phone"] = res[3] or ""
-                di["position"] = res[4] or ""
-                di["region"] = res[5] or ""
-                di["address"] = res[6] or ""
-                data.append(di)
-
-            return Response({"list": data}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsNew(APIView):
-    """新建客户 clients/new"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        name = request.data.get("name")  # 客户名称
-        contacts = request.data.get("contact")  # 联系人
-        client_phone = request.data.get("phone")  # 手机号
-        wechat = request.data.get("wechat", "")  # 微信号
-        salesman_id = request.data.get("salesman_id", "")  # 跟进业务员ID
-        group_id = request.data.get("group_id", "")  # 分组id
-        position = request.data.get("position", "")  # 职位
-        remark = request.data.get("remark", "")  # 备注
-        region = request.data.get("region", "")  # 客户地址
-        address = request.data.get("address", "")  # 详细地址
-
-        if not all([name, contacts, client_phone]):
-            return Response({"res": 1, "errmsg": "Lack of params name or contacts or phone! 缺少参数客户名称或联系人或客户手机号！"},
-                            status=status.HTTP_200_OK)
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            uuid = generate_uuid()
-            cursor.execute("insert into factory_clients values ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', %d, "
-                           "'%s', '%s', '%s', '%s', '%s');" % (
-                               uuid, factory_id, name, contacts, client_phone, wechat, position, remark,
-                               int(time.time()),
-                               group_id, salesman_id, phone, region, address))
-            connection.commit()
-
-            message = {'resource': 'PyClientsNew', 'type': 'POST',
-                       'params': {'Fac': factory_id, 'Name': name, 'Contacts': contacts, 'ClientID': uuid,
-                                  'Creator': phone}}
-            # print("message=", message)
-            rabbitmq = UtilsRabbitmq()
-            rabbitmq.send_message(json.dumps(message))
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsDetail(APIView):
-    """客户详情 clients/detail"""
-    permission_classes = [OrderPermission]
-
-    def get(self, request):
-        client_id = request.query_params.get("id")  # 客户id
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        sql = """
-        select
-          t1.*,
-          t2.name as group_name,
-          t3.name as salesman_name,
-          t4.name as creator
-        from
-          (
-          select 
-            *
-          from 
-            factory_clients
-          where 
-            id = '%s'
-          ) t1
-        left join groups t2 on 
-          t1.group_id = t2.id
-        left join salesman t3 on 
-          t1.salesman_id = t3.id
-        left join user_info t4 on 
-          t1.creator_id = t4.phone;
-        """ % client_id
-
-        try:
-            data = {}
-            cursor.execute(sql)
-            result = cursor.fetchone()
-
-            data["name"] = result[2] or ""
-            data["contacts"] = result[3] or ""
-            data["phone"] = result[4] or ""
-            data["wechat"] = result[5] or ""
-            data["position"] = result[6] or ""
-            data["remark"] = result[7] or ""
-            data["group_id"] = result[9] or ""
-            data["salesman_id"] = result[10] or ""
-            creator_id = result[11]
-            data["region"] = result[12] or ""
-            data["address"] = result[13] or ""
-            data["group_name"] = result[14] or ""
-            data["salesman_name"] = result[15] or ""
-
-            if "1" in permission:
-                data["flag"] = "0"
-            elif creator_id == phone:
-                data["flag"] = "0"
-            else:
-                data["flag"] = "1"
-            return Response(data, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsDelete(APIView):
-    """删除客户 clients/del"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        client_id = request.data.get("id")  # 客户id
-        if not client_id:
-            return Response({"res": 1, "errmsg": "Lack of params client id! 缺少参数客户id！"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            cursor.execute(
-                "delete from factory_clients where id = '%s';" % client_id)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsModify(APIView):
-    """修改客户信息 clients/modify"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        client_id = request.data.get("id")  # 客户id
-        name = request.data.get("name")  # 客户名称
-        contacts = request.data.get("contact")  # 联系人
-        client_phone = request.data.get("phone")  # 手机号
-        wechat = request.data.get("wechat", "")  # 微信号
-        salesman_id = request.data.get("salesman_id", "")  # 跟进业务员ID
-        group_id = request.data.get("group_id", "")  # 分组id
-        position = request.data.get("position", "")  # 职位
-        remark = request.data.get("remark", "")  # 备注
-        region = request.data.get("region", "")  # 客户地址
-        address = request.data.get("address", "")  # 详细地址
-        if not all([client_id, name, contacts, client_phone]):
-            return Response({"res": 1, "errmsg": "Lack of params! 缺少参数！"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select count(1) from factory_clients where id = '%s';" % client_id)
-        id_check = cursor.fetchone()[0]
-        if id_check <= 0:
-            return Response({"res": 1, "errmsg": "This id doesn't exist! 此id不存在！"}, status=status.HTTP_200_OK)
-
-        try:
-            cursor.execute("update factory_clients set name = '%s', contacts = '%s', phone = '%s', wechat = '%s',"
-                           " position = '%s', remark = '%s', time = %d, group_id = '%s', salesman_id = '%s', "
-                           "region = '%s', address = '%s' where id = '%s';" % (name, contacts, client_phone, wechat,
-                                                                               position, remark, int(
-                time.time()),
-                                                                               group_id, salesman_id, region, address,
-                                                                               client_id))
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsGroupList(APIView):
-    """客户分组列表 clients/group/list"""
-    permission_classes = [OrderPermission]
-
-    def get(self, request):
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select id, name from groups where factory = '%s' order by name asc;" % factory_id)
-        result = cursor.fetchall()
-        data = []
-        for res in result:
-            di = dict()
-            di["id"] = res[0] or ""
-            di["name"] = res[1] or ""
-            data.append(di)
-
-        return Response({"list": data}, status=status.HTTP_200_OK)
-
-
-class ClientsGroupNew(APIView):
-    """新建客户分组 clients/group/new"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        name = request.data.get("name")  # 客户分组名称
-        if not name:
-            return Response({"res": 1, "errmsg": "Lack of params client group name! 缺少参数客户分组名称！"},
-                            status=status.HTTP_200_OK)
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute("select count(1) from groups where factory = '%s' and name = '%s';" % (
-            factory_id, name))
-        name_check = cursor.fetchone()[0]
-        if name_check >= 1:
-            return Response({"res": 1, "errmsg": "This name is already exist in current factory! 此名称已存在于当前工厂！"},
-                            status=status.HTTP_200_OK)
-
-        try:
-            cursor.execute("insert into groups values ('%s', '%s', '%s', %d);" % (
-                generate_uuid(), factory_id, name, int(time.time())))
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsGroupDelete(APIView):
-    """删除客户分组 clients/group/del"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        client_group_id = request.data.get("id")  # 客户分组id
-        if not client_group_id:
-            return Response({"res": 1, "errmsg": "Lack of params client group id! 缺少参数客户分组id！"},
-                            status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            cursor.execute("delete from groups where id = '%s';" %
-                           client_group_id)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsSalesmanList(APIView):
-    """业务员列表 clients/salesman/list"""
-    permission_classes = [OrderPermission]
-
-    def get(self, request):
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        cursor.execute(
-            "select id, name from salesman where factory = '%s' order by name asc;" % factory_id)
-        result = cursor.fetchall()
-        data = []
-        for res in result:
-            di = dict()
-            di["id"] = res[0] or ""
-            di["name"] = res[1] or ""
-            data.append(di)
-
-        return Response({"list": data}, status=status.HTTP_200_OK)
-
-
-class ClientsSalesmanNew(APIView):
-    """新建跟进业务员 clients/salesman/new"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        name = request.data.get("name")  # 业务员姓名
-        if not name:
-            return Response({"res": 1, "errmsg": "Lack of params name! 缺少参数业务员姓名！"}, status=status.HTTP_200_OK)
-
-        phone = request.redis_cache["phone"]
-        factory_id = request.redis_cache["factory_id"]
-        permission = request.redis_cache["permission"]
-        # print(phone, factory_id, permission)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            cursor.execute("insert into salesman values ('%s', '%s', '%s', %d);" % (
-                generate_uuid(), factory_id, name, int(time.time())))
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-
-class ClientsSalesmanDelete(APIView):
-    """删除业务员 clients/salesman/del"""
-    permission_classes = [OrderPermission]
-
-    def post(self, request):
-        salesman_id = request.data.get("id")  # 业务员id
-        if not salesman_id:
-            return Response({"res": 1, "errmsg": "Lack of params salesman id! 缺少参数业务员id！"}, status=status.HTTP_200_OK)
-
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-
-        try:
-            cursor.execute(
-                "delete from salesman where id = '%s';" % salesman_id)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
+# class OrderDelete(APIView):
+#     """删除订单 order/del"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         order_id = request.data.get("id")
+#         if not order_id:
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#         try:
+#             cursor.execute(
+#                 "select count(1) from orders where id = '%s';" % order_id)
+#             order_check = cursor.fetchone()[0]
+#             if order_check == 0:
+#                 return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
+#             cursor.execute("delete from orders where id = '%s';" % order_id)
+#             cursor.execute(
+#                 "delete from finance_logs where use_id = '%s';" % order_id)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class OrderModify(APIView):
+#     """修改订单 order/modify"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         timestamp = int(time.time())
+#         order_id = request.data.get("id")  # 订单ID
+#         products_list = request.data.get("products", [])  # 列表
+#         client_id = request.data.get("client_id")  # 客户ID
+#         deliver_time = request.data.get("deliver_time", 0)  # 交货日期
+#         remark = request.data.get("remark", "")  # 备注
+#         contract = request.data.get("contract")  # 合同照片
+#         if not order_id:
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#         alioss = AliOss()
+#
+#         cursor.execute(
+#             "select count(1) from orders where id = '%s';" % order_id)
+#         order_check = cursor.fetchone()[0]
+#         if order_check == 0:
+#             return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
+#
+#         cursor.execute(
+#             "select name from factory_clients where id = '%s';" % client_id)
+#         client_name = cursor.fetchone()[0] or ""
+#
+#         try:
+#             if contract:
+#                 image_id, image_url = alioss.upload_image(contract)
+#                 cursor.execute(
+#                     "update orders set client_id = '%s', deliver_time = %d, remark = '%s', time = %d, contract = '%s' "
+#                     "where id = '%s';" % (client_id, deliver_time, remark, timestamp, image_id, order_id))
+#             else:
+#                 cursor.execute(
+#                     "update orders set client_id = '%s', deliver_time = %d, remark = '%s', time = %d where id = '%s';"
+#                     % (client_id, deliver_time, remark, timestamp, order_id))
+#             cursor.execute(
+#                 "delete from order_products where order_id = '%s';" % order_id)
+#
+#             finace_count = 0
+#             for product in products_list:
+#                 finace_count += product["sell_price"]
+#                 product_id = product["product_id"]
+#                 product_count = product["product_count"]
+#                 sell_price = product["sell_price"]
+#                 order_products_sql = "insert into order_products (order_id, product_id, product_count, sell_price," \
+#                                      " time) values ('%s', '%s', %d, %s, %d);" % (
+#                                          order_id, product_id, product_count, str(sell_price), timestamp)
+#                 cursor.execute(order_products_sql)
+#             if finace_count >= 0:
+#                 cursor.execute("update finance_logs set type = '%s', count = %d, time = %d where use_id = '%s';" % (
+#                     client_name, finace_count, timestamp, order_id))
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class OrderTrack(APIView):
+#     """订单追踪 order/track"""
+#     permission_classes = [OrderPermission]
+#
+#     def get(self, request):
+#         order_id = request.query_params.get("id")  # 订单id
+#         # 订单追踪类型，all: 订单所有状态追踪, money: 订单收款情况追踪, products: 订单产品状态追踪
+#         order_type = request.query_params.get("type")
+#
+#         condition = ""
+#         if order_type == "all":
+#             pass
+#         elif order_type == "money":
+#             condition += " and type = '%s' " % OrderTrackType.money.value
+#         elif order_type == "products":
+#             condition += " and type = '%s' " % OrderTrackType.products.value
+#
+#         track_sql = "select id, type, val, time from order_track where order_id = '%s'" % order_id + condition + \
+#                     " order by time desc;"
+#         products_sql = "select sum(product_count) as val from order_products where order_id = '%s' group by " \
+#                        "order_id;" % order_id
+#         money_sql = "select sum(sell_price) as val from order_products where order_id = '%s' group by " \
+#                     "order_id;" % order_id
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             cursor.execute(track_sql)
+#             track_result = cursor.fetchall()
+#             cursor.execute(products_sql)
+#             counts_result = cursor.fetchone()
+#             counts_result = counts_result[0] if counts_result else 0
+#             cursor.execute(money_sql)
+#             money_result = cursor.fetchone()
+#             money_result = money_result[0] if money_result else 0
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+#
+#         data, track_list = {}, []
+#         for track in track_result:
+#             di = dict()
+#             di["id"] = track[0]
+#             di["type"] = track[1]
+#             di["val"] = track[2]
+#             di["time"] = track[3]
+#             track_list.append(di)
+#
+#         data["list"] = track_list
+#         if order_type == "all":
+#             pass
+#         elif order_type == "money":
+#             data["val"] = money_result
+#         elif order_type == "products":
+#             data["val"] = counts_result
+#
+#         return Response(data, status=status.HTTP_200_OK)
+
+
+# class OrderDeliver(APIView):
+#     """订单发货、未发货 order/deliver"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         order_id = request.data.get("id")  # 订单id
+#         state = request.data.get("state", "0")  # 发货: 0, 未发货: 1
+#         deliver_time = request.data.get(
+#             "deliver_time", int(time.time()))  # 发货时间戳
+#         remark = request.data.get("remark", "")  # 备注
+#         if not order_id:
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         timestamp = int(time.time())
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select count(1) from orders where id = '%s';" % order_id)
+#         order_check = cursor.fetchone()[0]
+#         # print(order_check)
+#         if order_check == 0:
+#             return Response({"res": 1, "errmsg": "order_id doesn't exist. 该订单id不存在。"}, status=status.HTTP_200_OK)
+#
+#         cursor.execute("select state from orders where id = '%s';" % order_id)
+#         order_state = cursor.fetchone()[0]
+#
+#         try:
+#             if order_state == state:
+#                 cursor.execute("update order_track set time = %d where order_id = '%s' and type = '%s';" % (
+#                     deliver_time, order_id, OrderTrackType.deliver.value))
+#             else:
+#                 if order_state == "0":
+#                     cursor.execute("delete from order_track where order_id = '%s' and type = '%s';" % (
+#                         order_id, OrderTrackType.deliver.value))
+#                     cursor.execute(
+#                         "delete from products_log where use_id = '%s';" % order_id)
+#                 else:
+#                     message = {'resource': 'PyOrderDeliver', 'type': 'POST',
+#                                'params': {'Fac': factory_id, 'OrderId': order_id}}
+#                     # print("message=", message)
+#                     rabbitmq = UtilsRabbitmq()
+#                     rabbitmq.send_message(json.dumps(message))
+#
+#                     cursor.execute(
+#                         "insert into order_track (order_id, type, val, time) values ('%s', '%s', '', %d);" % (
+#                             order_id, OrderTrackType.deliver.value, timestamp))
+#                     cursor.execute(
+#                         "select product_id, product_count from order_products where order_id = '%s';" % order_id)
+#                     products_result = cursor.fetchall()
+#                     for product in products_result:
+#                         product_id = product[0]
+#                         product_count = product[1]
+#                         cursor.execute("insert into products_log (id, factory, use_id, parent_type, product_id, count, "
+#                                        "time) values ('%s', '%s', '%s', 'order', '%s', %d, %d);" % (
+#                                            generate_uuid(), factory_id, order_id, product_id, product_count,
+#                                            int(deliver_time)))
+#
+#             cursor.execute("update orders set state = '%s', deliver_time = %d, remark = '%s' where id = '%s';" % (
+#                 state, deliver_time, remark, order_id))
+#
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class OrderIncome(APIView):
+#     """订单金额 order/income/{id}"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request, order_id):
+#         """添加订单收款金额"""
+#         if not order_id:  # 订单id
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少订单id参数。"}, status=status.HTTP_200_OK)
+#         value = int(request.data.get("val"))  # 收款金额
+#         timestamp = request.data.get("time")  # 时间戳
+#         # print(order_id), print(value, type(value)), print(timestamp, type(timestamp))
+#         if value < 0:
+#             return Response({"res": 1, "errmsg": "order_id value less than 0! 订单id收款金额小于0！"}, status=status.HTTP_200_OK)
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select count(1) from orders where id = '%s';" % order_id)
+#         id_check = cursor.fetchone()[0]
+#         if id_check <= 0:
+#             return Response({"res": 1, "errmsg": "order_id doesn't exist! 订单id不存在！"}, status=status.HTTP_200_OK)
+#
+#         try:
+#             cursor.execute(
+#                 "update orders set collected = collected + %d where id = '%s';" % (value, order_id))
+#             cursor.execute("insert into order_track (order_id, type, val, time) values ('%s', %s, '%s', %d);" % (
+#                 order_id, OrderTrackType.money.value, value, timestamp))
+#             connection.commit()
+#
+#             message = {'resource': 'PyOrderIncome', 'type': 'POST',
+#                        'params': {'Fac': factory_id, 'OrderId': order_id, "Val": value}}
+#             # print("message=", message)
+#             rabbitmq = UtilsRabbitmq()
+#             rabbitmq.send_message(json.dumps(message))
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+#
+#     def put(self, request, track_id):
+#         """修改订单收款金额"""
+#         if not track_id or not track_id.isdigit():  # 收款记录id
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少收款记录id参数。"}, status=status.HTTP_200_OK)
+#         value = int(request.data.get("val"))  # 收款金额
+#         timestamp = request.data.get("time")  # 时间戳
+#         # print(track_id, type(track_id)), print(value, type(value)), print(timestamp, type(timestamp))
+#         if value < 0:
+#             return Response({"res": 1, "errmsg": "order_id value less than 0! 订单id收款金额小于0！"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select count(1) from order_track where id = '%s';" % track_id)
+#         id_check = cursor.fetchone()[0]
+#         if id_check <= 0:
+#             return Response({"res": 1, "errmsg": "order track_id doesn't exist! 订单收款记录id不存在！"},
+#                             status=status.HTTP_200_OK)
+#
+#         track_id = int(track_id)
+#         try:
+#             cursor.execute(
+#                 "select order_id, val from order_track where id = %d;" % track_id)
+#             result = cursor.fetchone()
+#             order_id, val = result[0], result[1] if result[1] else 0
+#             # print(order_id, type(order_id)), print(val, type(val))
+#             update_val = int(value) - int(val)
+#             cursor.execute(
+#                 "update orders set collected = collected + %d where id = '%s';" % (update_val, order_id))
+#             cursor.execute(
+#                 "update order_track set val = '%s', time = %d where id = %d;" % (value, timestamp, track_id))
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+#
+#     def delete(self, request, track_id):
+#         """删除修改记录"""
+#         if not track_id or not track_id.isdigit():  # 收款记录id
+#             return Response({"res": 1, "errmsg": "lack of order_id. 缺少收款记录id参数。"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select count(1) from order_track where id = '%s';" % track_id)
+#         id_check = cursor.fetchone()[0]
+#         if id_check <= 0:
+#             return Response({"res": 1, "errmsg": "order track_id doesn't exist! 订单收款记录id不存在！"},
+#                             status=status.HTTP_200_OK)
+#
+#         track_id = int(track_id)
+#         try:
+#             cursor.execute(
+#                 "select order_id, val from order_track where id = %d;" % track_id)
+#             result = cursor.fetchone()
+#             order_id, val = result[0], result[1] if result[1] else 0
+#             # print(order_id, type(order_id)), print(val, type(val))
+#             update_val = - int(val)
+#             cursor.execute(
+#                 "update orders set collected = collected + %d where id = '%s';" % (update_val, order_id))
+#             cursor.execute("delete from order_track where id = %d;" % track_id)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsList(APIView):
+#     """客户列表 clients/list"""
+#     permission_classes = [OrderPermission]
+#
+#     def get(self, request):
+#         group = request.query_params.get("group")  # 分组id,请求所有客户时不带此参数
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         data = []
+#
+#         try:
+#             if group:
+#                 cursor.execute("select id, name, contacts, phone, position, region, address from factory_clients "
+#                                "where factory = '%s' and group_id = '%s' order by name asc;" % (factory_id, group))
+#             else:
+#                 cursor.execute("select id, name, contacts, phone, position, region, address from factory_clients "
+#                                "where factory = '%s' order by name asc;" % factory_id)
+#
+#             result = cursor.fetchall()
+#             for res in result:
+#                 di = dict()
+#                 di["id"] = res[0] or ""
+#                 di["name"] = res[1] or ""
+#                 di["contacts"] = res[2] or ""
+#                 di["phone"] = res[3] or ""
+#                 di["position"] = res[4] or ""
+#                 di["region"] = res[5] or ""
+#                 di["address"] = res[6] or ""
+#                 data.append(di)
+#
+#             return Response({"list": data}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsNew(APIView):
+#     """新建客户 clients/new"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         name = request.data.get("name")  # 客户名称
+#         contacts = request.data.get("contact")  # 联系人
+#         client_phone = request.data.get("phone")  # 手机号
+#         wechat = request.data.get("wechat", "")  # 微信号
+#         salesman_id = request.data.get("salesman_id", "")  # 跟进业务员ID
+#         group_id = request.data.get("group_id", "")  # 分组id
+#         position = request.data.get("position", "")  # 职位
+#         remark = request.data.get("remark", "")  # 备注
+#         region = request.data.get("region", "")  # 客户地址
+#         address = request.data.get("address", "")  # 详细地址
+#
+#         if not all([name, contacts, client_phone]):
+#             return Response({"res": 1, "errmsg": "Lack of params name or contacts or phone! 缺少参数客户名称或联系人或客户手机号！"},
+#                             status=status.HTTP_200_OK)
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             uuid = generate_uuid()
+#             cursor.execute("insert into factory_clients values ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', %d, "
+#                            "'%s', '%s', '%s', '%s', '%s');" % (
+#                                uuid, factory_id, name, contacts, client_phone, wechat, position, remark,
+#                                int(time.time()),
+#                                group_id, salesman_id, phone, region, address))
+#             connection.commit()
+#
+#             message = {'resource': 'PyClientsNew', 'type': 'POST',
+#                        'params': {'Fac': factory_id, 'Name': name, 'Contacts': contacts, 'ClientID': uuid,
+#                                   'Creator': phone}}
+#             # print("message=", message)
+#             rabbitmq = UtilsRabbitmq()
+#             rabbitmq.send_message(json.dumps(message))
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsDetail(APIView):
+#     """客户详情 clients/detail"""
+#     permission_classes = [OrderPermission]
+#
+#     def get(self, request):
+#         client_id = request.query_params.get("id")  # 客户id
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         sql = """
+#         select
+#           t1.*,
+#           t2.name as group_name,
+#           t3.name as salesman_name,
+#           t4.name as creator
+#         from
+#           (
+#           select
+#             *
+#           from
+#             factory_clients
+#           where
+#             id = '%s'
+#           ) t1
+#         left join groups t2 on
+#           t1.group_id = t2.id
+#         left join salesman t3 on
+#           t1.salesman_id = t3.id
+#         left join user_info t4 on
+#           t1.creator_id = t4.phone;
+#         """ % client_id
+#
+#         try:
+#             data = {}
+#             cursor.execute(sql)
+#             result = cursor.fetchone()
+#
+#             data["name"] = result[2] or ""
+#             data["contacts"] = result[3] or ""
+#             data["phone"] = result[4] or ""
+#             data["wechat"] = result[5] or ""
+#             data["position"] = result[6] or ""
+#             data["remark"] = result[7] or ""
+#             data["group_id"] = result[9] or ""
+#             data["salesman_id"] = result[10] or ""
+#             creator_id = result[11]
+#             data["region"] = result[12] or ""
+#             data["address"] = result[13] or ""
+#             data["group_name"] = result[14] or ""
+#             data["salesman_name"] = result[15] or ""
+#
+#             if "1" in permission:
+#                 data["flag"] = "0"
+#             elif creator_id == phone:
+#                 data["flag"] = "0"
+#             else:
+#                 data["flag"] = "1"
+#             return Response(data, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsDelete(APIView):
+#     """删除客户 clients/del"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         client_id = request.data.get("id")  # 客户id
+#         if not client_id:
+#             return Response({"res": 1, "errmsg": "Lack of params client id! 缺少参数客户id！"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             cursor.execute(
+#                 "delete from factory_clients where id = '%s';" % client_id)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsModify(APIView):
+#     """修改客户信息 clients/modify"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         client_id = request.data.get("id")  # 客户id
+#         name = request.data.get("name")  # 客户名称
+#         contacts = request.data.get("contact")  # 联系人
+#         client_phone = request.data.get("phone")  # 手机号
+#         wechat = request.data.get("wechat", "")  # 微信号
+#         salesman_id = request.data.get("salesman_id", "")  # 跟进业务员ID
+#         group_id = request.data.get("group_id", "")  # 分组id
+#         position = request.data.get("position", "")  # 职位
+#         remark = request.data.get("remark", "")  # 备注
+#         region = request.data.get("region", "")  # 客户地址
+#         address = request.data.get("address", "")  # 详细地址
+#         if not all([client_id, name, contacts, client_phone]):
+#             return Response({"res": 1, "errmsg": "Lack of params! 缺少参数！"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select count(1) from factory_clients where id = '%s';" % client_id)
+#         id_check = cursor.fetchone()[0]
+#         if id_check <= 0:
+#             return Response({"res": 1, "errmsg": "This id doesn't exist! 此id不存在！"}, status=status.HTTP_200_OK)
+#
+#         try:
+#             cursor.execute("update factory_clients set name = '%s', contacts = '%s', phone = '%s', wechat = '%s',"
+#                            " position = '%s', remark = '%s', time = %d, group_id = '%s', salesman_id = '%s', "
+#                            "region = '%s', address = '%s' where id = '%s';" % (name, contacts, client_phone, wechat,
+#                                                                                position, remark, int(
+#                 time.time()),
+#                                                                                group_id, salesman_id, region, address,
+#                                                                                client_id))
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsGroupList(APIView):
+#     """客户分组列表 clients/group/list"""
+#     permission_classes = [OrderPermission]
+#
+#     def get(self, request):
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select id, name from groups where factory = '%s' order by name asc;" % factory_id)
+#         result = cursor.fetchall()
+#         data = []
+#         for res in result:
+#             di = dict()
+#             di["id"] = res[0] or ""
+#             di["name"] = res[1] or ""
+#             data.append(di)
+#
+#         return Response({"list": data}, status=status.HTTP_200_OK)
+
+
+# class ClientsGroupNew(APIView):
+#     """新建客户分组 clients/group/new"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         name = request.data.get("name")  # 客户分组名称
+#         if not name:
+#             return Response({"res": 1, "errmsg": "Lack of params client group name! 缺少参数客户分组名称！"},
+#                             status=status.HTTP_200_OK)
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute("select count(1) from groups where factory = '%s' and name = '%s';" % (
+#             factory_id, name))
+#         name_check = cursor.fetchone()[0]
+#         if name_check >= 1:
+#             return Response({"res": 1, "errmsg": "This name is already exist in current factory! 此名称已存在于当前工厂！"},
+#                             status=status.HTTP_200_OK)
+#
+#         try:
+#             cursor.execute("insert into groups values ('%s', '%s', '%s', %d);" % (
+#                 generate_uuid(), factory_id, name, int(time.time())))
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsGroupDelete(APIView):
+#     """删除客户分组 clients/group/del"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         client_group_id = request.data.get("id")  # 客户分组id
+#         if not client_group_id:
+#             return Response({"res": 1, "errmsg": "Lack of params client group id! 缺少参数客户分组id！"},
+#                             status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             cursor.execute("delete from groups where id = '%s';" %
+#                            client_group_id)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsSalesmanList(APIView):
+#     """业务员列表 clients/salesman/list"""
+#     permission_classes = [OrderPermission]
+#
+#     def get(self, request):
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         cursor.execute(
+#             "select id, name from salesman where factory = '%s' order by name asc;" % factory_id)
+#         result = cursor.fetchall()
+#         data = []
+#         for res in result:
+#             di = dict()
+#             di["id"] = res[0] or ""
+#             di["name"] = res[1] or ""
+#             data.append(di)
+#
+#         return Response({"list": data}, status=status.HTTP_200_OK)
+
+
+# class ClientsSalesmanNew(APIView):
+#     """新建跟进业务员 clients/salesman/new"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         name = request.data.get("name")  # 业务员姓名
+#         if not name:
+#             return Response({"res": 1, "errmsg": "Lack of params name! 缺少参数业务员姓名！"}, status=status.HTTP_200_OK)
+#
+#         phone = request.redis_cache["phone"]
+#         factory_id = request.redis_cache["factory_id"]
+#         permission = request.redis_cache["permission"]
+#         # print(phone, factory_id, permission)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             cursor.execute("insert into salesman values ('%s', '%s', '%s', %d);" % (
+#                 generate_uuid(), factory_id, name, int(time.time())))
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+
+
+# class ClientsSalesmanDelete(APIView):
+#     """删除业务员 clients/salesman/del"""
+#     permission_classes = [OrderPermission]
+#
+#     def post(self, request):
+#         salesman_id = request.data.get("id")  # 业务员id
+#         if not salesman_id:
+#             return Response({"res": 1, "errmsg": "Lack of params salesman id! 缺少参数业务员id！"}, status=status.HTTP_200_OK)
+#
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#
+#         try:
+#             cursor.execute(
+#                 "delete from salesman where id = '%s';" % salesman_id)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
 
 
 class Products(APIView):

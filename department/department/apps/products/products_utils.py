@@ -2,6 +2,7 @@ import time
 import json
 import random
 import logging
+import traceback
 
 from apps_utils import UtilsPostgresql, UtilsRabbitmq, AliOss, generate_module_uuid
 
@@ -102,6 +103,7 @@ def create_product_task(**kwargs):
         conn.commit()
 
     except Exception as e:
+        traceback.print_exc()
         logger.error(e)
         return {'res': 1, 'errmsg': '服务器异常'}
 

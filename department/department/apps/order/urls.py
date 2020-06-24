@@ -15,20 +15,20 @@ path 匹配任何非空字符串，包含了路径分隔符
 """
 
 urlpatterns = [
-    path("order/clients/group/<str:id>", views_client.ClientGroup.as_view()),
-    path("order/clients/group", views_client.ClientGroup.as_view()),
+    path("order/clients/group/<str:id>", views_client.ClientGroup.as_view()),  # deleted
+    path("order/clients/group", views_client.ClientGroup.as_view()),           # deleted
 
-    path("order/clients/search", views_client.ClientSearch.as_view()),
-    path("order/clients/products", views_client.ClientProductList.as_view()),
-    path("order/clients/<str:client_id>", views_client.ClientSave.as_view()),
-    path("order/clients", views_client.Clients.as_view()),
+    path("order/clients/search", views_client.ClientSearch.as_view()),         # checked
+    path("order/clients/products", views_client.ClientProductList.as_view()),  # checked
+    path("order/clients/<str:client_id>", views_client.ClientSave.as_view()),  # checked
+    path("order/clients", views_client.Clients.as_view()),                     # checked
 
-    path("order/main/crank", views.OrderCRank.as_view()),
-    path("order/main", views.OrderMain.as_view()),
-    path("order/new", views.OrderNew.as_view()),
-    path("order/products", views.Products.as_view()),
-    path("order/list/<str:list_type>", views.OrderList.as_view()),
-    path("order/<str:order_id>", views.OrderDetail.as_view()),
+    path("order/main/crank", views.OrderCRank.as_view()),                      # checked
+    path("order/main", views.OrderMain.as_view()),                             # checked
+    path("order/new", views.OrderNew.as_view()),                               # checked
+    path("order/products", views.Products.as_view()),                          # checked
+    path("order/list/<str:list_type>", views.OrderList.as_view()),             # checked
+    path("order/<str:order_id>", views.OrderDetail.as_view()),                 # checked
 
     # 注意：deliver和del有冲突
     # url("order/deliver", views.OrderDeliver.as_view()),
