@@ -226,15 +226,12 @@ class ProductTaskDoneStats(APIView):
         sql_1 = """
             select 
                 t1.id, 
-                CAST 
-                    (t1.target_count AS VARCHAR(15)) || coalesce(t2.unit, '') 
-                as target, 
+                round(t1.target_count :: int, 2) || coalesce(t2.unit, '') as target,
                 case t1.state
                     when '{}' then t1.time
                     when '{}' then t1.prepare_time
                     when '{}' then t1.start_time
-                    when '{}' then t1.complete_time 
-                    else null
+                    when '{}' then t1.complete_time
                 end as time, 
                 t2.name 
             from 
@@ -250,9 +247,7 @@ class ProductTaskDoneStats(APIView):
         sql_2 = """
             select 
                 t2.id, 
-                CAST 
-                    (t2.target_count AS VARCHAR(15)) || t3.unit 
-                as target, 
+                round(t2.target_count :: int, 2) || t3.unit as target,
                 case 
                     when t1.state  = '0' then t1.time else t1.completed_time
                 end as time, 

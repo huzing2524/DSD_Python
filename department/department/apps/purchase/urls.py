@@ -18,10 +18,10 @@ urlpatterns = [
     path("purchase/main/crank", views.PurchaseCRank.as_view()),
     path("purchase/main", views.PurchaseMain.as_view()),
     path("purchase/list/<str:list_type>", views.PurchaseList.as_view()),
-    path("purchase/supplier/search", views_supplier.SupplierSearch.as_view()),
-    path("purchase/supplier/list", views_supplier.SupplierList.as_view()),
-    path("purchase/supplier/materials", views_supplier.SupplierMaterialList.as_view()),
-    path("purchase/supplier/<str:supplier_id>", views_supplier.Supplier.as_view()),
-    path("purchase/supplier", views_supplier.SupplierNew.as_view()),
+    path("purchase/supplier/search", views_supplier.SupplierSearch.as_view()),           # checked
+    path("purchase/supplier/list", views_supplier.SupplierList.as_view()),               # checked
+    path("purchase/supplier/materials", views_supplier.SupplierMaterialList.as_view()),  # checked
+    path("purchase/supplier/<str:supplier_id>", views_supplier.Supplier.as_view()),      # checked
+    path("purchase/supplier", views_supplier.SupplierNew.as_view()),                     # checked
     path("purchase/<str:purchase_id>", views.PurchaseDetail.as_view())
 ]

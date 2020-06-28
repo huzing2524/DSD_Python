@@ -8,7 +8,7 @@ from django.utils.decorators import method_decorator
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from apps_utils import UtilsPostgresql, generate_uuid, UtilsRabbitmq, AliOss, generate_module_uuid, today_timestamp
+from apps_utils import UtilsPostgresql, UtilsRabbitmq, AliOss, generate_module_uuid, today_timestamp
 from permissions import OrderPermission, order_decorator, order_approval_decorator
 
 from purchase.purchase_utils import update_purchase_state

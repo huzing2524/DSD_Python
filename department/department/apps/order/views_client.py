@@ -10,83 +10,83 @@ from apps_utils import UtilsPostgresql, generate_sql_uuid
 logger = logging.getLogger('django')
 
 
-class ClientGroup(APIView):
-    """订单首页 /order/main"""
-
-    def get(self, request):
-        factory_id = request.redis_cache["factory_id"]
-        sql = "select id, name from base_client_groups where factory = '{0}' order by name desc".format(factory_id)
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-        try:
-            cursor.execute(sql)
-            res = cursor.fetchall()
-            data = []
-            for x in res:
-                temp = dict()
-                temp['id'] = x[0]
-                temp['name'] = x[1]
-                data.append(temp)
-
-            return Response({"list": data},
-                            status=status.HTTP_200_OK)
-        except Exception as e:
-            traceback.print_exc()
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-    def post(self, request):
-        timestamp = int(time.time())
-        name = request.data.get("name")  # 客户分组名称
-        if not name:
-            return Response({"res": 1, "errmsg": "缺少客户分组名称！"},
-                            status=status.HTTP_200_OK)
-        factory_id = request.redis_cache["factory_id"]
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-        cursor.execute("select count(1) from groups where factory = '%s' and name = '%s';" % (
-            factory_id, name))
-        name_check = cursor.fetchone()[0]
-        if name_check >= 1:
-            return Response({"res": 1, "errmsg": "名称已存在！"},
-                            status=status.HTTP_200_OK)
-
-        try:
-            delete_sql = "insert into base_client_groups (factory, name, time) values ('{0}', '{1}', {2})".format(
-                factory_id,
-                name,
-                timestamp)
-            cursor.execute(delete_sql)
-            connection.commit()
-
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
-
-    def delete(self, request, id):
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
-        cursor.execute(
-            "select count(1) from base_client_groups where id = '{0}';".format(id))
-
-        id_check = cursor.fetchone()[0]
-        if id_check <= 0:
-            return Response({"res": 1, "errmsg": "记录不存在！"},
-                            status=status.HTTP_200_OK)
-        try:
-            cursor.execute("delete from order_track where id = '{0}';".format(id))
-            connection.commit()
-            return Response({"res": 0}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(e)
-            return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        finally:
-            pgsql.disconnect_postgresql(connection)
+# class ClientGroup(APIView):
+#     """订单首页 /order/main"""
+#
+#     def get(self, request):
+#         factory_id = request.redis_cache["factory_id"]
+#         sql = "select id, name from base_client_groups where factory = '{0}' order by name desc".format(factory_id)
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#         try:
+#             cursor.execute(sql)
+#             res = cursor.fetchall()
+#             data = []
+#             for x in res:
+#                 temp = dict()
+#                 temp['id'] = x[0]
+#                 temp['name'] = x[1]
+#                 data.append(temp)
+#
+#             return Response({"list": data},
+#                             status=status.HTTP_200_OK)
+#         except Exception as e:
+#             traceback.print_exc()
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+#
+#     def post(self, request):
+#         timestamp = int(time.time())
+#         name = request.data.get("name")  # 客户分组名称
+#         if not name:
+#             return Response({"res": 1, "errmsg": "缺少客户分组名称！"},
+#                             status=status.HTTP_200_OK)
+#         factory_id = request.redis_cache["factory_id"]
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#         cursor.execute("select count(1) from groups where factory = '%s' and name = '%s';" % (
+#             factory_id, name))
+#         name_check = cursor.fetchone()[0]
+#         if name_check >= 1:
+#             return Response({"res": 1, "errmsg": "名称已存在！"},
+#                             status=status.HTTP_200_OK)
+#
+#         try:
+#             delete_sql = "insert into base_client_groups (factory, name, time) values ('{0}', '{1}', {2})".format(
+#                 factory_id,
+#                 name,
+#                 timestamp)
+#             cursor.execute(delete_sql)
+#             connection.commit()
+#
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
+#
+#     def delete(self, request, id):
+#         pgsql = UtilsPostgresql()
+#         connection, cursor = pgsql.connect_postgresql()
+#         cursor.execute(
+#             "select count(1) from base_client_groups where id = '{0}';".format(id))
+#
+#         id_check = cursor.fetchone()[0]
+#         if id_check <= 0:
+#             return Response({"res": 1, "errmsg": "记录不存在！"},
+#                             status=status.HTTP_200_OK)
+#         try:
+#             cursor.execute("delete from order_track where id = '{0}';".format(id))
+#             connection.commit()
+#             return Response({"res": 0}, status=status.HTTP_200_OK)
+#         except Exception as e:
+#             logger.error(e)
+#             return Response({"res": 1, "errmsg": "server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         finally:
+#             pgsql.disconnect_postgresql(connection)
 
 
 class Clients(APIView):

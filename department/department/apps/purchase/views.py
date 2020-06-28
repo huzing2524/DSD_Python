@@ -467,7 +467,7 @@ class PurchaseList(APIView):
 
 
 class PurchaseDetail(APIView):
-    """采购单详情"""
+    """采购单详情 purchase/<str:purchase_id>"""
 
     @method_decorator(purchase_decorator)
     def get(self, request, purchase_id):

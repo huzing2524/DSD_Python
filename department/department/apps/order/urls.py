@@ -15,8 +15,8 @@ path 匹配任何非空字符串，包含了路径分隔符
 """
 
 urlpatterns = [
-    path("order/clients/group/<str:id>", views_client.ClientGroup.as_view()),  # deleted
-    path("order/clients/group", views_client.ClientGroup.as_view()),           # deleted
+    # path("order/clients/group/<str:id>", views_client.ClientGroup.as_view()),  # deleted
+    # path("order/clients/group", views_client.ClientGroup.as_view()),           # deleted
 
     path("order/clients/search", views_client.ClientSearch.as_view()),         # checked
     path("order/clients/products", views_client.ClientProductList.as_view()),  # checked

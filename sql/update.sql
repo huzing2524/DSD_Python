@@ -606,8 +606,7 @@ alter table base_suppliers
     add column deliver_days float default 0;
 alter table base_supplier_materials
     add column lowest_package float default 0, -- 最小包装量
-    add column lowest_count   float default 0;
--- 最小起订量
+    add column lowest_count   float default 0; -- 最小起订量
 
 -- 订单状态更新记录日志
 create table base_orders_stats

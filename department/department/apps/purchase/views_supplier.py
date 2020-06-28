@@ -1,8 +1,8 @@
-import json
 import logging
 import time
 import traceback
 
+from django.db import transaction
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,7 +14,7 @@ logger = logging.getLogger('django')
 
 
 class Supplier(APIView):
-    """客户"""
+    """客户 purchase/supplier/<str:supplier_id>"""
     permission_classes = [PurchasePermission]
 
     def get(self, request, supplier_id):
@@ -62,7 +62,6 @@ class Supplier(APIView):
             sql = "select name, phone, contacts, position, region, address, industry from base_clients_pool  " \
                   "where id = '{}'".format(supplier_id)
         try:
-
             cursor.execute(sql)
             result = cursor.fetchall()
             di = dict()
@@ -90,7 +89,7 @@ class Supplier(APIView):
 
     def post(self, request, supplier_id):
         """从客户资源库中添加为供应商"""
-        user_phone = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
         materials = request.data.get("materials", [])
         deliver_days = request.data.get("deliver_days", 0)
@@ -123,21 +122,24 @@ class Supplier(APIView):
                   "region, address, industry, create_time, deliver_days) values ('{0}', '{1}','{2}','{3}', '{4}'," \
                   " '{5}', '{6}', '{7}', '{8}', '{9}', {10}, {11})".format(client[0], factory_id, client[1], client[3],
                                                                            client[2], client[4],
-                                                                           user_phone, client[5], client[6], client[7],
+                                                                           user_id, client[5], client[6], client[7],
                                                                            timestamp,
                                                                            deliver_days)
             cursor.execute(sql)
             for x in materials:
                 material_lowest_sql = "select lowest_package, lowest_count from base_products where id = '{}'" \
-                                      " and factory = '{}' ".format(x['id'], supplier_id)
+                                      " and factory = '{}' ".format(x['id'], factory_id)
 
                 cursor.execute(material_lowest_sql)
                 res = cursor.fetchone()
 
-                supplier_materials_sql = '''insert into base_supplier_materials (factory_id,
-                 supplier_id, material_id, unit_price, lowest_package, lowest_count) values ('{}', '{}', '{}', 
-                 {}, {}, {})'''.format(factory_id, supplier_id, x['id'], x['unit_price'], res[0],
-                                       res[1])
+                supplier_materials_sql = '''
+                insert into 
+                    base_supplier_materials (factory_id, supplier_id, material_id, unit_price, lowest_package, 
+                    lowest_count) 
+                values 
+                    ('{}', '{}', '{}', {}, {}, {})'''.format(factory_id, supplier_id, x['id'], x['unit_price'],
+                                                             res[0] or 0, res[1] or 0)
 
                 cursor.execute(supplier_materials_sql)
             connection.commit()
@@ -172,10 +174,18 @@ class Supplier(APIView):
             materials_del_sql = "delete from base_supplier_materials where factory_id = '{}' and supplier_id = '{}'" \
                                 ";".format(factory_id, supplier_id)
             cursor.execute(materials_del_sql)
+            search_sql = "select lowest_count, lowest_package from base_products where factory = '{}' and id = '{}';"
             for x in materials:
-                supplier_materials_sql = '''insert into base_supplier_materials (factory_id,
-                 supplier_id, material_id, unit_price) values ('{}', '{}', '{}', 
-                 {})'''.format(factory_id, supplier_id, x['id'], x['unit_price'])
+                cursor.execute(search_sql.format(factory_id, x['id']))
+                search_res = cursor.fetchone()
+                lowest_count, lowest_package = search_res[0] or 0, search_res[1] or 0
+
+                supplier_materials_sql = '''
+                insert into 
+                    base_supplier_materials (factory_id, supplier_id, material_id, unit_price, lowest_count, 
+                    lowest_package) 
+                values ('{}', '{}', '{}', {}, {}, {})'''.format(factory_id, supplier_id, x['id'], x['unit_price'],
+                                                                lowest_count, lowest_package)
                 cursor.execute(supplier_materials_sql)
             connection.commit()
             return Response({"res": 0}, status=status.HTTP_200_OK)
@@ -187,12 +197,13 @@ class Supplier(APIView):
 
 
 class SupplierNew(APIView):
+    """purchase/supplier 添加供应商"""
     permission_classes = [PurchasePermission]
 
     def post(self, request):
         timestamp = int(time.time())
         name = request.data.get("name")  # 客户名称
-        contacts = request.data.get("contact")  # 联系人
+        contact = request.data.get("contact")  # 联系人
         phone = request.data.get("phone")  # 手机号]
         industry = request.data.get("industry")  # 分组id
         position = request.data.get("position", "")  # 职位
@@ -201,13 +212,12 @@ class SupplierNew(APIView):
         materials = request.data.get("materials", [])
         deliver_days = request.data.get("deliver_days", 0)
 
-        logger.info(request.data)
+        # print(request.data)
 
-        if not all([name, contacts, phone]):
-            return Response({"res": 1, "errmsg": "请检查输入参数！"},
-                            status=status.HTTP_200_OK)
+        if not all([name, contact, phone]):
+            return Response({"res": 1, "errmsg": "请检查输入参数！"}, status=status.HTTP_200_OK)
 
-        user_phone = request.redis_cache["phone"]
+        user_id = request.redis_cache["user_id"]
         factory_id = request.redis_cache["factory_id"]
 
         pgsql = UtilsPostgresql()
@@ -217,33 +227,34 @@ class SupplierNew(APIView):
             cursor.execute(name_check_sql)
             count = cursor.fetchone()[0]
             if count >= 1:
-                return Response({"res": 1, "errmsg": "该供应商已存在，请搜索添加!"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"res": 1, "errmsg": "该供应商已存在，请搜索添加!"}, status=status.HTTP_200_OK)
 
             supplier_id = generate_sql_uuid()
             sql = "insert into base_suppliers (id, factory, name, contacts, phone, position, create_time, " \
                   "creator, region, address, industry, deliver_days) values ('{0}', '{1}','{2}','{3}', '{4}', '{5}'," \
-                  " {6}, '{7}', '{8}', '{9}', '{10}', {11})".format(supplier_id, factory_id, name, contacts,
+                  " {6}, '{7}', '{8}', '{9}', '{10}', {11})".format(supplier_id, factory_id, name, contact,
                                                                     phone, position, timestamp,
-                                                                    user_phone, region,
+                                                                    user_id, region,
                                                                     address, industry, deliver_days)
 
             pool_sql = "insert into base_clients_pool ( name, contacts, phone, position, create_time, region," \
                        " address, industry, id, verify) values ('{0}', '{1}','{2}','{3}', {4}, '{5}'," \
-                       " '{6}', '{7}', '{8}', '0') on conflict (name) do nothing".format(name, contacts, phone,
+                       " '{6}', '{7}', '{8}', '0') on conflict (name) do nothing".format(name, contact, phone,
                                                                                          position, timestamp, region,
                                                                                          address,
                                                                                          industry,
                                                                                          supplier_id)
-            cursor.execute(pool_sql)
-            cursor.execute(sql)
-            for x in materials:
-                supplier_materials_sql = '''
-                insert into base_supplier_materials (factory_id, supplier_id, material_id, unit_price, 
-                lowest_package, lowest_count) values ('{}', '{}', '{}', {}, {}, {})
-                '''.format(factory_id, supplier_id, x['id'], x['unit_price'], x['lowest_package'], x['lowest_count'])
-                cursor.execute(supplier_materials_sql)
-            connection.commit()
-            return Response({"res": 0}, status=status.HTTP_200_OK)
+
+            with transaction.atomic():
+                cursor.execute(pool_sql)
+                cursor.execute(sql)
+                for x in materials:
+                    supplier_materials_sql = '''
+                    insert into base_supplier_materials (factory_id, supplier_id, material_id, unit_price, 
+                    lowest_package, lowest_count) values ('{}', '{}', '{}', {}, {}, {})
+                    '''.format(factory_id, supplier_id, x['id'], x['unit_price'], x['lowest_package'], x['lowest_count'])
+                    cursor.execute(supplier_materials_sql)
+                return Response({"res": 0}, status=status.HTTP_200_OK)
         except Exception as e:
             traceback.print_exc()
             logger.error(e)
@@ -253,6 +264,7 @@ class SupplierNew(APIView):
 
 
 class SupplierSearch(APIView):
+    """purchase/supplier/search"""
     permission_classes = [PurchasePermission]
 
     def get(self, request):
@@ -263,7 +275,7 @@ class SupplierSearch(APIView):
         connection, cursor = pgsql.connect_postgresql()
         try:
             cursor.execute(
-                "select id, name from base_clients_pool where name like %s order by name asc limit 5;",
+                "select id, name from base_clients_pool where name like %s order by name limit 5;",
                 ['%' + name + '%'])
             res = cursor.fetchall()
             data = []
@@ -281,6 +293,7 @@ class SupplierSearch(APIView):
 
 
 class SupplierList(APIView):
+    """purchase/supplier/list"""
     permission_classes = [PurchasePermission]
 
     def get(self, request):
@@ -302,7 +315,7 @@ class SupplierList(APIView):
             from
                 base_suppliers t1
             left join factorys t2 on
-                t1.id = t2.id
+                t1.factory = t2.id
             left join (
                 select
                     t1.factory_id,
@@ -320,7 +333,7 @@ class SupplierList(APIView):
                     t1.supplier_id ) t3 on
                 t1.id = t3.supplier_id
             where
-                t1.factory = '{}' order by t1.name asc;'''.format('{}', factory_id, factory_id)
+                t1.factory = '{}' order by t1.name;'''.format(factory_id, factory_id)
             cursor.execute(suppliers_sql)
             result = cursor.fetchall()
             data = []
@@ -341,6 +354,7 @@ class SupplierList(APIView):
 
 
 class SupplierMaterialList(APIView):
+    """purchase/supplier/materials"""
     permission_classes = [PurchasePermission]
 
     def get(self, request):
@@ -349,7 +363,6 @@ class SupplierMaterialList(APIView):
         pgsql = UtilsPostgresql()
         connection, cursor = pgsql.connect_postgresql()
         try:
-
             if not supplier_id:
                 suppliers_sql = '''
                     select
@@ -374,73 +387,39 @@ class SupplierMaterialList(APIView):
                     data.append(temp)
                 return Response({"list": data}, status=status.HTTP_200_OK)
             else:
-                count_sql = '''
-                    select
-                       count(1)
-                    from
-                        (
-                        select
-                            *
-                        from
-                            base_materials
-                        where
-                            factory = '{}' ) t1
-                    left join (
-                        select
-                            *
-                        from
-                            base_products
-                        where
-                            factory = '{}' ) t2 on
-                        t1.id = t2.id where t2.id notnull;'''.format(factory_id, supplier_id)
+                count_sql = """
+                select count(*)
+                from base_supplier_materials
+                where factory_id = '{0}'
+                  and supplier_id = '{1}';
+                """.format(factory_id, supplier_id)
                 cursor.execute(count_sql)
                 count = cursor.fetchone()[0]
                 if count:
                     materials_sql = '''
-                        select
-                            t1.id,
-                            t2.id,
-                            t2.lowest_count,
-                            t2.lowest_product,
-                            t3.name,
-                            t3.unit
-                        from
-                            (
-                            select
-                                *
-                            from
-                                base_materials
-                            where
-                                factory = '{}' ) t1
-                        left join (
-                            select
-                                *
-                            from
-                                base_products
-                            where
-                                factory = '{}' ) t2 on
-                            t1.id = t2.id
-                        left join base_materials_pool t3 on
-                            t1.id = t3.id;'''.format(factory_id, supplier_id)
+                    select t1.material_id,
+                           t1.lowest_count,
+                           t1.lowest_package,
+                           t2.name,
+                           t2.unit
+                    from (
+                             select *
+                             from base_supplier_materials
+                             where factory_id = '{0}'
+                               and supplier_id = '{1}') t1
+                             left join base_materials_pool t2 on
+                        t1.material_id = t2.id;
+                    '''.format(factory_id, supplier_id)
                     cursor.execute(materials_sql)
                     materials_res = cursor.fetchall()
                     disable = []
                     able = []
+                    target1, target2 = ['id', 'name', 'unit'], ['id', 'lowest_count', 'lowest_package', 'name', 'unit']
                     for material in materials_res:
-                        if not material[1]:
-                            temp = dict()
-                            temp['id'] = material[0]
-                            temp['name'] = material[4]
-                            temp['unit'] = material[5]
-                            disable.append(temp)
+                        if not material[0]:
+                            disable.append(dict(zip(target1, (material[0], material[-2], material[-1]))))
                         else:
-                            temp = dict()
-                            temp['id'] = material[0]
-                            temp['name'] = material[4]
-                            temp['unit'] = material[5]
-                            temp['lowest_count'] = material[2]
-                            temp['lowest_product'] = material[3]
-                            able.append(temp)
+                            able.append(dict(zip(target2, material)))
                     return Response({'able': able, 'disable': disable}, status=status.HTTP_200_OK)
 
                 else:
