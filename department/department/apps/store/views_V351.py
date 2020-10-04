@@ -56,7 +56,7 @@ class MultiStorage(APIView):
             if default_check <= 0:
                 cursor.execute("insert into base_multi_storage (uuid, name, time, factory) values "
                                "('default', '默认仓库', {}, '{}') ;".format(arrow.now().timestamp, factory_id))
-            connection.commit()
+                connection.commit()
 
             cursor.execute(store_sql)
             result_1 = cursor.fetchall()
@@ -134,7 +134,14 @@ class MultiStorage(APIView):
             "select count(1) from base_multi_storage where factory = '{}' and uuid = '{}';".format(factory_id, id_))
         id_check = cursor.fetchone()[0]
         if id_check == 0:
-            return Response({"res": 1, "errmsg": "此id不存在！"}, status=status.HTTP_200_OK)
+            return Response({"res": 1, "errmsg": "要修改的此仓库不存在！"}, status=status.HTTP_200_OK)
+
+        # 同一工厂内 仓库名称不能重复
+        cursor.execute(
+            "select count(*) from base_multi_storage where factory = '{}' and name = '{}';".format(factory_id, name))
+        name_check = cursor.fetchone()[0]
+        if name_check >= 1:
+            return Response({'res': 1, 'errmsg': '仓库名称重复！'})
 
         try:
             cursor.execute("update base_multi_storage set name = '{}' where factory = '{}' and "

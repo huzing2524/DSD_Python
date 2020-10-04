@@ -1335,10 +1335,11 @@ class StoreStorageMain(APIView):
 
         materials_sql = """
         select
-          array_agg(t1.material_id),
+          array_agg(t1.material_id) as material_id,
           array_agg(coalesce(t1.actual, 0) + coalesce(t1.on_road, 0) - coalesce(t1.prepared, 0) - 
-          coalesce(t1.safety, 0)) as available,
-          array_agg(coalesce(t2.name, '')) as name, array_agg(coalesce(t2.unit, '')) as unit,
+            coalesce(t1.safety, 0)) as available,
+          array_agg(coalesce(t2.name, '')) as name, 
+          array_agg(coalesce(t2.unit, '')) as unit,
           coalesce(t3.name, '') as category,
           array_agg(coalesce(t4.name, '')) as store_name
         from
@@ -1355,24 +1356,13 @@ class StoreStorageMain(APIView):
           category desc;
         """
 
-        # materials_log_sql = """
-        # select
-        #   coalesce(time, 0) as recent
-        # from
-        #   base_materials_log
-        # where
-        #   material_id = '%s' and type = 'actual' and count < 0
-        # order by
-        #   time desc
-        # limit 1;
-        # """
-
         products_sql = """
         select
-          array_agg(t1.product_id),
+          array_agg(t1.product_id) as product_id,
           array_agg(coalesce(t1.actual, 0) + coalesce(t1.pre_product, 0) - coalesce(t1.prepared, 0) - 
-          coalesce(t1.safety, 0)) as available,
-          array_agg(coalesce(t2.name, '')) as name, array_agg(coalesce(t2.unit, '')) as unit,
+            coalesce(t1.safety, 0)) as available,
+          array_agg(coalesce(t2.name, '')) as name, 
+          array_agg(coalesce(t2.unit, '')) as unit,
           coalesce(t3.name, '') as category,
           array_agg(coalesce(t4.name, '')) as store_name
         from
@@ -1389,18 +1379,6 @@ class StoreStorageMain(APIView):
           category desc;
         """
 
-        # products_log_sql = """
-        # select
-        #   coalesce(time, 0) as recent
-        # from
-        #   base_products_log
-        # where
-        #   product_id = '%s' and type = 'actual' and count < 0
-        # order by
-        #   time desc
-        # limit 1;
-        # """
-
         products, materials, not_category_products, not_category_materials = [], [], [], []
         try:
             cursor.execute(materials_sql)
@@ -1415,9 +1393,6 @@ class StoreStorageMain(APIView):
                 for te in temp:
                     dt = dict()
                     dt["id"] = te[0]
-                    # cursor.execute(materials_log_sql % dt["id"])
-                    # recent = cursor.fetchone()
-                    # dt["recent"] = recent[0] if recent else 0
                     dt["available"] = round(te[1] if te[1] else 0, 2)
                     dt["name"] = te[2]
                     dt["unit"] = te[3]
@@ -1440,9 +1415,6 @@ class StoreStorageMain(APIView):
                 for te in temp:
                     dt = dict()
                     dt["id"] = te[0]
-                    # cursor.execute(products_log_sql % dt["id"])
-                    # recent = cursor.fetchone()
-                    # dt["recent"] = recent[0] if recent else 0
                     dt["available"] = round(te[1] if te[1] else 0, 2)
                     dt["name"] = te[2]
                     dt["unit"] = te[3]

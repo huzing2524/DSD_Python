@@ -50,9 +50,9 @@ urlpatterns = [
     # get：物料详情     put：修改物料成本价和最低采购量
     path("product/material/detail/<str:Id>", views.ProductProductMaterialDetailId.as_view(), {'Type': 'material'}),
     # 添加产品
-    path("product/product/new", views.ProductProductMaterialNew.as_view(), {'Type': 'product'}),
+    path("product/product/new", views.ProductProductMaterialNew.as_view(), {'Type': 'product'}),  # checked
     # 添加物料
-    path("product/material/new", views.ProductProductMaterialNew.as_view(), {'Type': 'material'}),
+    path("product/material/new", views.ProductProductMaterialNew.as_view(), {'Type': 'material'}),  # checked
 
     # 新增工序
     path("product/process/new", views.ProductProcessNew.as_view()),

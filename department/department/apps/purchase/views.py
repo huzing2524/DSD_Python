@@ -9,9 +9,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps_utils import UtilsPostgresql, UtilsRabbitmq, generate_module_uuid, AliOss  # pylint: disable=redefined-builtin
-from constants import PrimaryKeyType
-from permissions import PurchasePermission, PurchaseApprovalPermission, purchase_decorator, purchase_approval_decorator
+from apps_utils import UtilsPostgresql, UtilsRabbitmq, AliOss  # pylint: disable=redefined-builtin
+from permissions import PurchasePermission, purchase_decorator, purchase_approval_decorator
 from store.store_stock_utils import material_on_road
 from order.order_utils import create_order
 
@@ -19,6 +18,7 @@ logger = logging.getLogger('django')
 
 
 class PurchaseMain(APIView):
+    """purchase/main"""
     permission_classes = [PurchasePermission]
 
     def get(self, request):
@@ -210,6 +210,7 @@ class PurchaseMain(APIView):
 
 
 class PurchaseList(APIView):
+    """purchase/list/<str:list_type>"""
 
     def customer_state_dict(self, orders):
         dt = {}
@@ -714,6 +715,7 @@ class PurchaseDetail(APIView):
 
 
 class PurchaseCRank(APIView):
+    """purchase/main/crank"""
     permission_classes = [PurchasePermission]
 
     def get(self, request):
@@ -778,12 +780,11 @@ class PurchaseCRank(APIView):
             for index, val in enumerate(res):
                 temp = dict()
                 temp['rn'] = index + 1
-                temp['name'] = val[1]
-                temp['amount'] = val[0]
+                temp['name'] = val[1] or ''
+                temp['amount'] = round(val[0], 2) or 0
                 data.append(temp)
 
-            return Response({"list": data},
-                            status=status.HTTP_200_OK)
+            return Response({"list": data}, status=status.HTTP_200_OK)
         except Exception as e:
             traceback.print_exc()
             logger.error(e)

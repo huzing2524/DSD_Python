@@ -2,12 +2,13 @@
 import logging
 import re
 import time
+import traceback
 
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db import connection
 
-from apps_utils import UtilsPostgresql, generate_uuid
 from constants import INDUSTRY_PLUS_LIST, INDUSTRY_PLUS_SCORE_DICT
 
 logger = logging.getLogger('django')
@@ -29,8 +30,7 @@ class IndustryPlusScore(APIView):
     def get(self, request):
         phone = request.redis_cache["phone"]
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         try:
             cursor.execute(
@@ -38,28 +38,23 @@ class IndustryPlusScore(APIView):
             result = cursor.fetchone()
             # print("result=", result)
             if result:
-                cursor.execute("select score from industry_plus_test order by score asc;")
-                score_list = cursor.fetchall()
-                less_list = []
-                # print("score_list=", score_list), print(len(score_list))
-                if score_list:
-                    for score in score_list:
-                        if score[0] < result[2]:
-                            less_list.append(score)
-
-                    beyond = float("%.4f" % (len(less_list) / len(score_list)))
-                else:
-                    beyond = 0
+                cursor.execute("select count(*) from industry_plus_test where score < {} union all "
+                               "select count(*) from industry_plus_test;".format(result[2]))
+                union_res = cursor.fetchall()
+                # print(union_res)
+                less_count, total_count = union_res[0][0], union_res[1][0]
+                beyond = float('%.4f' % (less_count / total_count))
 
                 return Response({"company_name": result[0], "intelligent_degree": result[1], "score": result[2],
                                  "beyond": beyond}, status=status.HTTP_200_OK)
             else:
                 return Response(status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
+            traceback.print_exc()
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error!"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
     def post(self, request):
         company_name = request.data.get("company_name")  # 公司名称
@@ -71,10 +66,10 @@ class IndustryPlusScore(APIView):
         phone = request.redis_cache["phone"]
 
         # 去重处理
-        content_list = list(set(content_list))
+        content_list = sorted(list(set(content_list)))
         # print(content_list)
 
-        score = 0.00
+        score = 0.0
         for content in content_list:
             if content not in INDUSTRY_PLUS_SCORE_DICT:
                 return Response({"res": 1, "errmsg": "content_list code error! 打分内容代号错误"},
@@ -83,8 +78,7 @@ class IndustryPlusScore(APIView):
         score = float("%.2f" % score)
         # print(score)
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         try:
             cursor.execute("delete from industry_plus_test where phone = '%s';" % phone)
@@ -98,7 +92,7 @@ class IndustryPlusScore(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error!"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()
 
 
 class IndustryPlusFactoryNew(APIView):
@@ -114,30 +108,31 @@ class IndustryPlusFactoryNew(APIView):
         supplement = request.data.get("supplement", "")  # 其它补充描述
 
         if not all([company_name, contact_name, contact_phone]):
-            return Response({"res": 1, "errmsg": "please write complete information! 请填写完整信息，以便联系您！"},
+            return Response({"res": 1, "errmsg": "请填写完整信息，以便联系您！"},
                             status=status.HTTP_200_OK)
 
         phone = request.redis_cache["phone"]
 
-        pgsql = UtilsPostgresql()
-        connection, cursor = pgsql.connect_postgresql()
+        cursor = connection.cursor()
 
         if not re.match("^(13[0-9]|14[579]|15[0-3,5-9]|16[6]|17[0135678]|18[0-9]|19[89])\\d{8}$", contact_phone):
-            return Response({"res": 1, "errmsg": "bad phone number format! 电话号码格式错误"}, status=status.HTTP_200_OK)
-
-        cursor.execute("select count(1) from industry_plus_factorys where contact_phone = '%s';" % contact_phone)
-        phone_check = cursor.fetchone()[0]
-        if phone_check >= 1:
-            return Response({"res": 1, "errmsg": "contact_phone number already exist! 联系电话号码已存在！"},
-                            status=status.HTTP_200_OK)
-
-        cursor.execute("select count(1) from industry_plus_factorys where company_name = '%s';" % company_name)
-        company_name_check = cursor.fetchone()[0]
-        if company_name_check >= 1:
-            return Response({"res": 1, "errmsg": "company_name already exist! 此公司名称已存在！"},
-                            status=status.HTTP_200_OK)
+            return Response({"res": 1, "errmsg": "电话号码格式错误"}, status=status.HTTP_200_OK)
 
         try:
+            cursor.execute("delete from industry_plus_factorys where phone = '%s';" % phone)
+
+            cursor.execute("select count(1) from industry_plus_factorys where contact_phone = '%s';" % contact_phone)
+            phone_check = cursor.fetchone()[0]
+            if phone_check >= 1:
+                return Response({"res": 1, "errmsg": "联系电话号码已存在！"},
+                                status=status.HTTP_200_OK)
+
+            cursor.execute("select count(1) from industry_plus_factorys where company_name = '%s';" % company_name)
+            company_name_check = cursor.fetchone()[0]
+            if company_name_check >= 1:
+                return Response({"res": 1, "errmsg": "此公司名称已存在！"},
+                                status=status.HTTP_200_OK)
+
             cursor.execute("insert into industry_plus_factorys (phone, company_name, industry, region, contact_name, "
                            "contact_phone, solve_problems, supplement, time) values ('%s', '%s', '%s', '%s', '%s', "
                            "'%s', '{%s}', '%s', %d);" % (
@@ -150,4 +145,4 @@ class IndustryPlusFactoryNew(APIView):
             logger.error(e)
             return Response({"res": 1, "errmsg": "server error!"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
-            pgsql.disconnect_postgresql(connection)
+            cursor.close()

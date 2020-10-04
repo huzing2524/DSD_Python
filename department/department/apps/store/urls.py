@@ -25,7 +25,7 @@ urlpatterns = [
     path("store/purchase_warehousing/detail", views_V350.StorePurchaseWarehousingDetail.as_view()),
     path("store/picking_list/main", views_V350.StorePickingListMain.as_view()),
     path("store/picking_list/detail", views_V350.StorePickingListDetail.as_view()),
-    path("store/storage/main", views_V350.StoreStorageMain.as_view()),
+    path("store/storage/main", views_V350.StoreStorageMain.as_view()),  # checked
     path("store/storage/detail/<str:type_>", views_V350.StoreStorageDetail.as_view()),
     path("store/check/main", views_V350.StoreCheckMain.as_view()),
     path("store/check/detail", views_V350.StoreCheckDetail.as_view()),
@@ -35,7 +35,7 @@ urlpatterns = [
     path("store/temporary_purchase/new", views_V350.StoreTemporaryPurchaseNew.as_view()),
     path("store/generate_module_uuid", views_V350.GenerateModuleUuid.as_view()),
     # v3.5.1
-    path("store/multi_storage/select", views_V351.MultiStorage.as_view()),
-    path("store/multi_storage/move", views_V351.MultiStorageMove.as_view()),
+    path("store/multi_storage/select", views_V351.MultiStorage.as_view()),    # checked
+    path("store/multi_storage/move", views_V351.MultiStorageMove.as_view()),  # checked
 
 ]

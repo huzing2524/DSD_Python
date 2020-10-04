@@ -15,7 +15,7 @@ path 匹配任何非空字符串，包含了路径分隔符
 """
 
 urlpatterns = [
-    path("purchase/main/crank", views.PurchaseCRank.as_view()),
+    path("purchase/main/crank", views.PurchaseCRank.as_view()),                          # checked
     path("purchase/main", views.PurchaseMain.as_view()),
     path("purchase/list/<str:list_type>", views.PurchaseList.as_view()),
     path("purchase/supplier/search", views_supplier.SupplierSearch.as_view()),           # checked
